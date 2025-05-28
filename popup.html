@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+      body {
+          width: 350px;
+          padding: 15px;
+          font-family: Arial, sans-serif;
+      }
+      .header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 15px;
+      }
+      .add-author {
+          display: flex;
+          gap: 5px;
+          margin-bottom: 15px;
+      }
+      #authorUrl {
+          flex: 1;
+          padding: 5px;
+          border: 1px solid #ddd;
+          border-radius: 3px;
+      }
+      button {
+          padding: 5px 10px;
+          background: #4285f4;
+          color: white;
+          border: none;
+          border-radius: 3px;
+          cursor: pointer;
+      }
+      button:hover {
+          background: #3367d6;
+      }
+      .author-item {
+          border: 1px solid #e0e0e0;
+          border-radius: 5px;
+          padding: 10px;
+          margin-bottom: 10px;
+          position: relative;
+      }
+      .author-name {
+          font-weight: bold;
+          margin-bottom: 5px;
+      }
+      .citation-info {
+          font-size: 14px;
+          color: #666;
+      }
+      .change-indicator {
+          position: absolute;
+          top: 10px;
+          right: 10px;
+          padding: 2px 6px;
+          border-radius: 10px;
+          font-size: 12px;
+          font-weight: bold;
+      }
+      .increase {
+          background: #e8f5e8;
+          color: #2e7d2e;
+      }
+      .decrease {
+          background: #ffeaea;
+          color: #d93025;
+      }
+      .delete-btn {
+          position: absolute;
+          top: 5px;
+          right: 5px;
+          background: #ea4335;
+          color: white;
+          border: none;
+          border-radius: 50%;
+          width: 20px;
+          height: 20px;
+          font-size: 12px;
+          cursor: pointer;
+      }
+      .last-update {
+          font-size: 12px;
+          color: #999;
+          text-align: center;
+          margin-top: 10px;
+      }
+      .empty-state {
+          text-align: center;
+          color: #999;
+          padding: 20px;
+      }
+  </style>
+</head>
+<body>
+  <div class="header">
+      <h3>Scholar Citation Monitor</h3>
+      <button id="refreshBtn">刷新</button>
+  </div>
+  
+  <div class="add-author">
+      <input type="text" id="authorUrl" placeholder="输入Google Scholar作者页面URL">
+      <button id="addBtn">添加</button>
+  </div>
+  
+  <div id="authorsList"></div>
+  
+  <div class="last-update" id="lastUpdate"></div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
