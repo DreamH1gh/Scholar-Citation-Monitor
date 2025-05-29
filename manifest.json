@@ -1,0 +1,35 @@
+{
+"manifest_version": 3,
+"name": "Scholar Citation Monitor",
+"version": "1.0",
+"description": "监控Google Scholar作者引用数变化",
+"host_permissions": [
+  "https://scholar.google.com/*",
+  "https://scholar.google.cn/*",
+  "https://scholar.google.com.hk/*",
+  "https://scholar.google.com.sg/*",
+  "https://scholar.google.co.jp/*",
+  "https://scholar.google.co.uk/*",
+  "https://scholar.google.com.tw/*",
+  "https://scholar.google.de/*",
+  "https://scholar.google.fr/*",
+  "https://scholar.google.ca/*"
+],
+"action": {
+  "default_popup": "popup.html",
+  "default_title": "Scholar Citation Monitor"
+},
+"icons": {
+  "16": "icon16.png",
+  "48": "icon48.png", 
+  "128": "icon128.png"
+},
+"background": {
+    "service_worker": "background.js"
+},
+"permissions": [
+    "storage",
+    "alarms",
+    "notifications"
+]
+}
