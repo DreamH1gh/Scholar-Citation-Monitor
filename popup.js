@@ -1,4 +1,4 @@
-// popup.js - 修复URL解析问题的版本
+// popup.js - 添加姓名链接功能的版本
 class ScholarMonitor {
   constructor() {
       // Google Scholar 多域名列表
@@ -265,6 +265,11 @@ class ScholarMonitor {
       }
   }
 
+  // 新增：打开作者页面的方法
+  openAuthorPage(url) {
+      chrome.tabs.create({ url: url });
+  }
+
   async saveAuthor(authorInfo) {
       const authors = await this.getStoredAuthors();
       
@@ -328,7 +333,7 @@ class ScholarMonitor {
               <div class="author-item ${showAsNew ? 'has-new' : ''}">
                   ${showAsNew ? '<div class="new-badge">NEW</div>' : ''}
                   <div class="author-header">
-                      <div class="author-name">${author.name}</div>
+                      <div class="author-name-link" data-url="${author.url}" title="点击访问 Google Scholar 主页">${author.name}</div>
                       <div style="display: flex; align-items: center;">
                           ${showAsNew ? `<button class="mark-read-btn" data-user-id="${author.userId}">已读</button>` : ''}
                           <button class="delete-btn" data-user-id="${author.userId}">×</button>
@@ -360,6 +365,14 @@ class ScholarMonitor {
               </div>
           `;
       }).join('');
+
+      // 绑定作者姓名链接事件
+      container.querySelectorAll('.author-name-link').forEach(link => {
+          link.addEventListener('click', (e) => {
+              const url = e.target.getAttribute('data-url');
+              this.openAuthorPage(url);
+          });
+      });
 
       // 绑定删除按钮事件
       container.querySelectorAll('.delete-btn').forEach(btn => {
