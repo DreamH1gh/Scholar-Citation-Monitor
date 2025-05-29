@@ -1,7 +1,6 @@
-// popup.js - 添加姓名链接功能的版本
+// popup.js - 修复时间同步问题
 class ScholarMonitor {
   constructor() {
-      // Google Scholar 多域名列表
       this.scholarDomains = [
           'scholar.google.com',
           'scholar.google.com.hk',
@@ -22,6 +21,31 @@ class ScholarMonitor {
       this.bindEvents();
       this.updateLastUpdateTime();
       this.updateStatsSummary();
+      
+      // 新增：监听存储变化，实时同步后台更新
+      this.startStorageListener();
+  }
+
+  // 新增：监听存储变化
+  startStorageListener() {
+      // 监听chrome.storage的变化
+      chrome.storage.onChanged.addListener((changes, namespace) => {
+          if (namespace === 'local' && changes.authors) {
+              console.log('检测到后台数据更新，刷新界面...');
+              this.loadAuthors();
+              this.updateLastUpdateTime();
+              this.updateStatsSummary();
+          }
+          
+          if (namespace === 'local' && changes.lastUpdateTime) {
+              this.updateLastUpdateTime();
+          }
+      });
+      
+      // 定期检查更新时间（备用方案）
+      setInterval(() => {
+          this.updateLastUpdateTime();
+      }, 30000); // 每30秒检查一次
   }
 
   bindEvents() {
@@ -42,7 +66,6 @@ class ScholarMonitor {
       }
 
       try {
-          // 显示加载状态
           const addBtn = document.getElementById('addBtn');
           const originalText = addBtn.textContent;
           addBtn.textContent = '添加中...';
@@ -50,6 +73,10 @@ class ScholarMonitor {
 
           const authorInfo = await this.fetchAuthorInfoWithFallback(url);
           await this.saveAuthor(authorInfo);
+          
+          // 更新最后更新时间
+          await this.setLastUpdateTime();
+          
           document.getElementById('authorUrl').value = '';
           await this.loadAuthors();
           this.updateStatsSummary();
@@ -69,16 +96,13 @@ class ScholarMonitor {
       );
   }
 
-  // 修复后的方法 - 正确处理包含额外参数的URL
   async fetchAuthorInfoWithFallback(originalUrl) {
-      // 提取user参数
       const userMatch = originalUrl.match(/user=([^&]+)/);
       if (!userMatch) {
           throw new Error('URL中未找到user参数');
       }
       const userId = userMatch[1];
       
-      // 尝试不同的域名
       for (const domain of this.scholarDomains) {
           const testUrl = `https://${domain}/citations?user=${userId}`;
           
@@ -86,7 +110,6 @@ class ScholarMonitor {
               console.log(`尝试域名: ${domain}`);
               const result = await this.fetchAuthorInfo(testUrl);
               
-              // 成功获取到数据，保存这个可用的URL
               result.url = testUrl;
               result.workingDomain = domain;
               
@@ -101,7 +124,6 @@ class ScholarMonitor {
       throw new Error('所有Google Scholar域名都无法访问，请检查网络连接或稍后重试');
   }
 
-  // 新的fetch方法，直接请求页面而不打开标签页
   async fetchAuthorInfo(url) {
       try {
           const response = await fetch(url, {
@@ -127,35 +149,29 @@ class ScholarMonitor {
       }
   }
 
-  // 解析Google Scholar页面HTML
   parseScholarPage(html, url) {
       try {
           const parser = new DOMParser();
           const doc = parser.parseFromString(html, 'text/html');
 
-          // 提取作者姓名
           const nameElement = doc.querySelector('#gsc_prf_in');
           if (!nameElement) {
               throw new Error('无法找到作者姓名，可能页面结构已变化或需要登录');
           }
           const name = nameElement.textContent.trim();
 
-          // 提取总引用数 - 修改选择器，只选择每行的第一列数据
           const citationRows = doc.querySelectorAll('#gsc_rsb_st tbody tr');
           if (citationRows.length < 3) {
               throw new Error('无法找到引用数据，可能页面结构已变化');
           }
 
-          // 每行的第一个 .gsc_rsb_std 元素就是"全部"列的数据
           const totalCitations = parseInt(citationRows[0].querySelector('.gsc_rsb_std')?.textContent.replace(/,/g, '')) || 0;
           const hIndex = parseInt(citationRows[1].querySelector('.gsc_rsb_std')?.textContent.replace(/,/g, '')) || 0;
           const i10Index = parseInt(citationRows[2].querySelector('.gsc_rsb_std')?.textContent.replace(/,/g, '')) || 0;
 
-          // 提取机构信息
           const affiliationElement = doc.querySelector('#gsc_prf_i .gsc_prf_il');
           const affiliation = affiliationElement ? affiliationElement.textContent.trim() : '未知机构';
 
-          // 提取研究领域
           const interestsElements = doc.querySelectorAll('#gsc_prf_int a.gs_ibl');
           const interests = Array.from(interestsElements).map(el => el.textContent.trim()).join(', ') || '未知领域';
 
@@ -194,25 +210,23 @@ class ScholarMonitor {
 
       let successCount = 0;
       let errorCount = 0;
+      const failedAuthors = [];
 
       for (let i = 0; i < authors.length; i++) {
           try {
-              await new Promise(resolve => setTimeout(resolve, 1000)); // 延迟1秒避免请求过快
+              await new Promise(resolve => setTimeout(resolve, 1000));
               
               const updatedInfo = await this.fetchAuthorInfoWithFallback(authors[i].url);
               
-              // 检查引用数是否有变化
               if (updatedInfo.totalCitations !== authors[i].totalCitations) {
                   updatedInfo.hasNewCitations = true;
                   updatedInfo.previousCitations = authors[i].totalCitations;
                   updatedInfo.changeTimestamp = new Date().toISOString();
               } else {
-                  // 保持现有的标志状态，但检查是否过期
                   updatedInfo.hasNewCitations = authors[i].hasNewCitations;
                   updatedInfo.previousCitations = authors[i].previousCitations;
                   updatedInfo.changeTimestamp = authors[i].changeTimestamp;
                   
-                  // 如果标志过期，清除它
                   if (!this.isChangeRecent(updatedInfo.changeTimestamp)) {
                       updatedInfo.hasNewCitations = false;
                       delete updatedInfo.previousCitations;
@@ -223,35 +237,48 @@ class ScholarMonitor {
               authors[i] = {...authors[i], ...updatedInfo};
               successCount++;
               
-              // 实时更新显示
               await this.saveAuthors(authors);
               await this.loadAuthors();
               
           } catch (error) {
               console.error(`刷新作者 ${authors[i].name} 失败:`, error);
               errorCount++;
+              failedAuthors.push({
+                  name: authors[i].name,
+                  error: error.message
+              });
           }
       }
 
       refreshBtn.textContent = originalText;
       refreshBtn.disabled = false;
 
-      const message = `刷新完成！成功: ${successCount}, 失败: ${errorCount}`;
-      alert(message);
+      // 更新最后更新时间
+      await this.setLastUpdateTime();
+
+      if (errorCount > 0) {
+          let message = `刷新完成！成功: ${successCount}, 失败: ${errorCount}`;
+          
+          if (errorCount <= 3) {
+              const failedNames = failedAuthors.map(f => f.name).join(', ');
+              message += `\n\n失败的作者: ${failedNames}`;
+          }
+          
+          alert(message);
+      }
+
       this.updateLastUpdateTime();
       this.updateStatsSummary();
   }
 
-  // 检查变化是否在最近24小时内
   isChangeRecent(changeTimestamp) {
       if (!changeTimestamp) return false;
       const changeTime = new Date(changeTimestamp);
       const now = new Date();
       const hoursDiff = (now - changeTime) / (1000 * 60 * 60);
-      return hoursDiff < 24; // 24小时内显示
+      return hoursDiff < 24;
   }
 
-  // 标记为已读
   async markAsRead(userId) {
       const authors = await this.getStoredAuthors();
       const author = authors.find(a => a.userId === userId);
@@ -265,7 +292,6 @@ class ScholarMonitor {
       }
   }
 
-  // 新增：打开作者页面的方法
   openAuthorPage(url) {
       chrome.tabs.create({ url: url });
   }
@@ -273,11 +299,9 @@ class ScholarMonitor {
   async saveAuthor(authorInfo) {
       const authors = await this.getStoredAuthors();
       
-      // 检查是否已存在
       const existingIndex = authors.findIndex(a => a.userId === authorInfo.userId);
       
       if (existingIndex >= 0) {
-          // 检查引用数变化
           if (authorInfo.totalCitations !== authors[existingIndex].totalCitations) {
               authorInfo.hasNewCitations = true;
               authorInfo.previousCitations = authors[existingIndex].totalCitations;
@@ -301,6 +325,23 @@ class ScholarMonitor {
       return new Promise((resolve) => {
           chrome.storage.local.get(['authors'], (result) => {
               resolve(result.authors || []);
+          });
+      });
+  }
+
+  // 新增：设置最后更新时间
+  async setLastUpdateTime() {
+      const now = new Date().toISOString();
+      return new Promise((resolve) => {
+          chrome.storage.local.set({lastUpdateTime: now}, resolve);
+      });
+  }
+
+  // 新增：获取最后更新时间
+  async getLastUpdateTime() {
+      return new Promise((resolve) => {
+          chrome.storage.local.get(['lastUpdateTime'], (result) => {
+              resolve(result.lastUpdateTime);
           });
       });
   }
@@ -366,7 +407,6 @@ class ScholarMonitor {
           `;
       }).join('');
 
-      // 绑定作者姓名链接事件
       container.querySelectorAll('.author-name-link').forEach(link => {
           link.addEventListener('click', (e) => {
               const url = e.target.getAttribute('data-url');
@@ -374,7 +414,6 @@ class ScholarMonitor {
           });
       });
 
-      // 绑定删除按钮事件
       container.querySelectorAll('.delete-btn').forEach(btn => {
           btn.addEventListener('click', (e) => {
               const userId = e.target.getAttribute('data-user-id');
@@ -382,7 +421,6 @@ class ScholarMonitor {
           });
       });
 
-      // 绑定已读按钮事件
       container.querySelectorAll('.mark-read-btn').forEach(btn => {
           btn.addEventListener('click', (e) => {
               const userId = e.target.getAttribute('data-user-id');
@@ -391,10 +429,17 @@ class ScholarMonitor {
       });
   }
 
-  updateLastUpdateTime() {
-      const now = new Date();
-      const timeString = now.toLocaleString('zh-CN');
-      document.getElementById('lastUpdate').textContent = `最后更新: ${timeString}`;
+  // 修改：从存储中获取最后更新时间
+  async updateLastUpdateTime() {
+      const lastUpdateTime = await this.getLastUpdateTime();
+      const timeElement = document.getElementById('lastUpdate');
+      
+      if (lastUpdateTime) {
+          const timeString = new Date(lastUpdateTime).toLocaleString('zh-CN');
+          timeElement.textContent = `最后更新: ${timeString}`;
+      } else {
+          timeElement.textContent = '最后更新: 从未更新';
+      }
   }
 
   async updateStatsSummary() {
@@ -420,7 +465,6 @@ class ScholarMonitor {
   }
 }
 
-// 初始化
 document.addEventListener('DOMContentLoaded', () => {
   new ScholarMonitor();
 });
