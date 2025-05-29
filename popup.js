@@ -16,15 +16,15 @@ class ScholarMonitor {
       this.init();
   }
 
-  async init() {
-      await this.loadAuthors();
-      this.bindEvents();
-      this.updateLastUpdateTime();
-      this.updateStatsSummary();
-      
-      // 新增：监听存储变化，实时同步后台更新
-      this.startStorageListener();
-  }
+    async init() {
+        await this.loadAuthors();
+        this.bindEvents();
+        this.updateLastUpdateTime();
+        this.updateStatsSummary();
+        
+        // 新增：监听存储变化，实时同步后台更新
+        this.startStorageListener();
+    }
 
   // 新增：监听存储变化
   startStorageListener() {
