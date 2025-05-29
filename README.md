@@ -38,15 +38,37 @@ scholar-citation-monitor/
 
 ### 🛠️ Installation Guide
 
-#### Method 1: Developer Mode (Recommended)
+#### Method 1: Git Clone (Recommended for Easy Updates)
 
-1. **Download or Clone** this repository
+1. **Clone the repository** using Git:
+ ```bash
+ git clone https://github.com/DreamH1gh/Scholar-Citation-Monitor.git
+ ```
+
 2. **Open Chrome** and navigate to `chrome://extensions/`
+
 3. **Enable Developer Mode** (toggle in the top-right corner)
-4. **Click "Load unpacked"** and select the project folder
+
+4. **Click "Load unpacked"** and select the cloned project folder
+
 5. **Pin the extension** to your toolbar for easy access
 
-#### Method 2: Chrome Web Store (Coming Soon™)
+**🔄 To update to the latest version:**
+```bash
+git pull origin main
+```
+Then reload the extension in Chrome (click the refresh button in `chrome://extensions/`)
+
+#### Method 2: Download ZIP (Manual Updates)
+
+1. **Download** the latest release as ZIP from GitHub
+2. **Extract** the ZIP file to your desired location
+3. **Open Chrome** and navigate to `chrome://extensions/`
+4. **Enable Developer Mode** (toggle in the top-right corner)
+5. **Click "Load unpacked"** and select the extracted folder
+6. **Pin the extension** to your toolbar for easy access
+
+#### Method 3: Chrome Web Store (Coming Soon™)
 
 *We're working on getting this published to the Chrome Web Store. Stay tuned!*
 
@@ -110,15 +132,37 @@ scholar-citation-monitor/
 
 ### 🛠️ 安装教程
 
-#### 方法一：开发者模式（推荐）
+#### 方法一：Git克隆（推荐，便于更新）
 
-1. **下载或克隆**本仓库
+1. **使用Git克隆仓库**：
+ ```bash
+ git clone https://github.com/DreamH1gh/Scholar-Citation-Monitor.git
+ ```
+
 2. **打开Chrome**，导航到 `chrome://extensions/`
+
 3. **启用开发者模式**（右上角的开关）
-4. **点击"加载已解压的扩展程序"**，选择项目文件夹
+
+4. **点击"加载已解压的扩展程序"**，选择克隆的项目文件夹
+
 5. **将扩展固定**到工具栏以便使用
 
-#### 方法二：Chrome应用商店（即将推出™）
+**🔄 更新到最新版本：**
+```bash
+git pull origin main
+```
+然后在Chrome中重新加载扩展（在 `chrome://extensions/` 中点击刷新按钮）
+
+#### 方法二：下载ZIP（手动更新）
+
+1. **从GitHub下载**最新版本的ZIP文件
+2. **解压**ZIP文件到你想要的位置
+3. **打开Chrome**，导航到 `chrome://extensions/`
+4. **启用开发者模式**（右上角的开关）
+5. **点击"加载已解压的扩展程序"**，选择解压后的文件夹
+6. **将扩展固定**到工具栏以便使用
+
+#### 方法三：Chrome应用商店（即将推出™）
 
 *我们正在努力将此扩展发布到Chrome应用商店，敬请期待！*
 
