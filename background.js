@@ -44,7 +44,7 @@ class BackgroundMonitor {
                       // 发送通知
                       chrome.notifications.create({
                           type: 'basic',
-                          iconUrl: 'icon.png',
+                          iconUrl: 'icon48.png',
                           title: '引用数更新',
                           message: `${author.name} 的引用数增加了 ${increase} 次`
                       });
