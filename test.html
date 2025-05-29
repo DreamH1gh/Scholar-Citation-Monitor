@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scholar Monitor 调试工具</title>
+<style>
+  body {
+      font-family: Arial, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+  }
+  .section {
+      margin-bottom: 30px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+  }
+  .section h2 {
+      margin-top: 0;
+      color: #333;
+  }
+  textarea {
+      width: 100%;
+      height: 200px;
+      font-family: monospace;
+      font-size: 12px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+  }
+  button {
+      background: #4285f4;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 10px 5px 10px 0;
+  }
+  button:hover {
+      background: #3367d6;
+  }
+  .result {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 4px;
+      margin-top: 10px;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 14px;
+  }
+  .success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+  }
+  .error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+  }
+  .info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+  }
+  .test-url {
+      width: 100%;
+      padding: 8px;
+      margin: 10px 0;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+  }
+  .log-container {
+      max-height: 400px;
+      overflow-y: auto;
+      background: #1e1e1e;
+      color: #fff;
+      padding: 15px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+  }
+  .regex-test {
+      margin: 10px 0;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+  }
+  .regex-test label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 5px;
+  }
+  .regex-test input {
+      width: 100%;
+      padding: 5px;
+      font-family: monospace;
+      font-size: 12px;
+  }
+  .regex-result {
+      margin-top: 5px;
+      padding: 5px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      font-family: monospace;
+      font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<h1>Scholar Monitor 调试工具</h1>
+
+<div class="section">
+  <h2>1. 测试 URL 解析</h2>
+  <input type="text" class="test-url" id="testUrl" placeholder="输入 Google Scholar 作者页面 URL" 
+         value="https://scholar.google.com/citations?user=XXXXXXX">
+  <button onclick="testUrlParsing()">测试解析</button>
+  <button onclick="fetchAndTest()">获取页面并测试</button>
+  <div id="urlResult" class="result" style="display: none;"></div>
+</div>
+
+<div class="section">
+  <h2>2. 测试正则表达式</h2>
+  <textarea id="htmlInput" placeholder="粘贴 Google Scholar 页面的 HTML 代码..."></textarea>
+  <button onclick="testRegexParsing()">测试正则解析</button>
+  <button onclick="loadSampleHtml()">加载示例 HTML</button>
+  <button onclick="showRegexTester()">显示正则测试器</button>
+  <div id="regexTester" style="display: none;">
+      <h3>正则表达式测试器</h3>
+      <div class="regex-test">
+          <label>姓名提取正则:</label>
+          <input type="text" id="nameRegex" value="<div[^>]*id=[&quot;']gsc_prf_in[&quot;'][^>]*>([^<]+)</div>">
+          <div id="nameRegexResult" class="regex-result"></div>
+      </div>
+      <div class="regex-test">
+          <label>统计表格正则:</label>
+          <input type="text" id="tableRegex" value="<table[^>]*id=[&quot;']gsc_rsb_st[&quot;'][^>]*>[\s\S]*?</table>">
+          <div id="tableRegexResult" class="regex-result"></div>
+      </div>
+      <div class="regex-test">
+          <label>引用数据正则:</label>
+          <input type="text" id="citationRegex" value="<td[^>]*class=[&quot;']gsc_rsb_std[&quot;'][^>]*>([^<]+)</td>">
+          <div id="citationRegexResult" class="regex-result"></div>
+      </div>
+      <button onclick="testCustomRegex()">测试自定义正则</button>
+  </div>
+  <div id="regexResult" class="result" style="display: none;"></div>
+</div>
+
+<div class="section">
+  <h2>3. 实时日志</h2>
+  <button onclick="clearLogs()">清空日志</button>
+  <button onclick="toggleAutoScroll()">自动滚动: <span id="autoScrollStatus">开</span></button>
+  <button onclick="exportLogs()">导出日志</button>
+  <div id="logContainer" class="log-container"></div>
+</div>
+
+<div class="section">
+  <h2>4. 扩展状态检查</h2>
+  <button onclick="checkExtensionStatus()">检查扩展状态</button>
+  <button onclick="checkStorageData()">检查存储数据</button>
+  <button onclick="triggerManualRefresh()">触发手动刷新</button>
+  <div id="statusResult" class="result" style="display: none;"></div>
+</div>
+
+<script>
+let autoScroll = true;
+let logContainer = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  logContainer = document.getElementById('logContainer');
+  startLogMonitoring();
+  log('调试工具已启动', 'info');
+});
+
+function log(message, type = 'info') {
+  const timestamp = new Date().toLocaleTimeString();
+  const logEntry = `[${timestamp}] ${type.toUpperCase()}: ${message}\n`;
+  
+  if (logContainer) {
+      logContainer.textContent += logEntry;
+      if (autoScroll) {
+          logContainer.scrollTop = logContainer.scrollHeight;
+      }
+  }
+  
+  console.log(logEntry);
+}
+
+function clearLogs() {
+  if (logContainer) {
+      logContainer.textContent = '';
+  }
+}
+
+function toggleAutoScroll() {
+  autoScroll = !autoScroll;
+  document.getElementById('autoScrollStatus').textContent = autoScroll ? '开' : '关';
+}
+
+function exportLogs() {
+  const logs = logContainer.textContent;
+  const blob = new Blob([logs], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `scholar-monitor-logs-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function startLogMonitoring() {
+  // 监听扩展的日志消息
+  if (typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.onMessage.addListener((message) => {
+          if (message.type === 'debug_log') {
+              log(message.message, message.level);
+          }
+      });
+  }
+}
+
+function showResult(element, content, type) {
+  element.textContent = content;
+  element.className = `result ${type}`;
+  element.style.display = 'block';
+}
+
+function isValidScholarUrl(url) {
+  const scholarDomains = [
+      'scholar.google.com',
+      'scholar.google.com.hk',
+      'scholar.google.com.sg',
+      'scholar.google.co.jp',
+      'scholar.google.co.uk',
+      'scholar.google.com.tw',
+      'scholar.google.de',
+      'scholar.google.fr',
+      'scholar.google.ca',
+      'scholar.google.cn'
+  ];
+  return scholarDomains.some(domain => 
+      url.includes(domain) && url.includes('user=')
+  );
+}
+
+function extractDomain(url) {
+  try {
+      return new URL(url).hostname;
+  } catch {
+      return 'invalid-url';
+  }
+}
+
+async function testUrlParsing() {
+  const url = document.getElementById('testUrl').value.trim();
+  const resultDiv = document.getElementById('urlResult');
+  
+  if (!url) {
+      showResult(resultDiv, '请输入 URL', 'error');
+      return;
+  }
+  
+  try {
+      log(`开始测试 URL: ${url}`);
+      
+      // 提取用户ID
+      const userMatch = url.match(/user=([^&]+)/);
+      if (!userMatch) {
+          throw new Error('URL中未找到user参数');
+      }
+      const userId = userMatch[1];
+      
+      const result = {
+          originalUrl: url,
+          userId: userId,
+          isValidScholarUrl: isValidScholarUrl(url),
+          extractedDomain: extractDomain(url)
+      };
+      
+      showResult(resultDiv, JSON.stringify(result, null, 2), 'success');
+      log('URL 解析成功', 'success');
+      
+  } catch (error) {
+      showResult(resultDiv, `错误: ${error.message}`, 'error');
+      log(`URL 解析失败: ${error.message}`, 'error');
+  }
+}
+
+async function fetchAndTest() {
+  const url = document.getElementById('testUrl').value.trim();
+  const resultDiv = document.getElementById('urlResult');
+  
+  if (!url) {
+      showResult(resultDiv, '请输入 URL', 'error');
+      return;
+  }
+  
+  try {
+      log(`开始获取页面: ${url}`);
+      showResult(resultDiv, '正在获取页面...', 'info');
+      
+      const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+          }
+      });
+      
+      if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const html = await response.text();
+      log(`页面获取成功，HTML 长度: ${html.length}`);
+      
+      // 自动填充到 HTML 输入框
+      document.getElementById('htmlInput').value = html.substring(0, 10000) + '...'; // 只显示前10000字符
+      
+      // 自动测试解析
+      const parseResult = testParseHtml(html, url);
+      showResult(resultDiv, JSON.stringify(parseResult, null, 2), parseResult.success ? 'success' : 'error');
+      
+  } catch (error) {
+      showResult(resultDiv, `获取页面失败: ${error.message}`, 'error');
+      log(`页面获取失败: ${error.message}`, 'error');
+  }
+}
+
+function testRegexParsing() {
+  const html = document.getElementById('htmlInput').value.trim();
+  const resultDiv = document.getElementById('regexResult');
+  
+  if (!html) {
+      showResult(resultDiv, '请输入 HTML 代码', 'error');
+      return;
+  }
+  
+  try {
+      log('开始测试正则表达式解析');
+      const result = testParseHtml(html, 'test-url');
+      showResult(resultDiv, JSON.stringify(result, null, 2), result.success ? 'success' : 'error');
+      
+  } catch (error) {
+      showResult(resultDiv, `解析失败: ${error.message}`, 'error');
+      log(`正则解析失败: ${error.message}`, 'error');
+  }
+}
+
+function testParseHtml(html, url) {
+  const result = {
+      success: false,
+      data: {},
+      errors: [],
+      debugInfo: {}
+  };
+  
+  try {
+      log('开始解析 HTML，长度: ' + html.length);
+      
+      // 测试姓名提取
+      let nameMatch = html.match(/<div[^>]*id=["']gsc_prf_in["'][^>]*>([^<]+)<\/div>/);
+      if (!nameMatch) {
+          nameMatch = html.match(/<div[^>]*id=gsc_prf_in[^>]*>([^<]+)<\/div>/);
+      }
+      
+      if (nameMatch) {
+          result.data.name = nameMatch[1].trim();
+          log(`姓名提取成功: ${result.data.name}`);
+      } else {
+          result.errors.push('无法提取姓名');
+          log('姓名提取失败', 'warn');
+          
+          // 调试信息：查找可能的姓名元素
+          const possibleNames = html.match(/<div[^>]*id[^>]*gsc_prf[^>]*>([^<]+)<\/div>/g);
+          result.debugInfo.possibleNameElements = possibleNames;
+      }
+      
+      // 测试统计表格提取
+      let tableMatch = html.match(/<table[^>]*id=["']gsc_rsb_st["'][^>]*>[\s\S]*?<\/table>/);
+      if (!tableMatch) {
+          tableMatch = html.match(/<table[^>]*id=gsc_rsb_st[^>]*>[\s\S]*?<\/table>/);
+      }
+      
+      if (tableMatch) {
+          const tableHtml = tableMatch[0];
+          log(`统计表格提取成功，长度: ${tableHtml.length}`);
+          result.debugInfo.tableHtml = tableHtml.substring(0, 500) + '...';
+          
+          // 测试引用数据提取
+          let citationMatches = tableHtml.match(/<td[^>]*class=["']gsc_rsb_std["'][^>]*>([^<]+)<\/td>/g);
+          if (!citationMatches) {
+              citationMatches = tableHtml.match(/<td[^>]*class=gsc_rsb_std[^>]*>([^<]+)<\/td>/g);
+          }
+          
+          if (citationMatches && citationMatches.length >= 6) {
+              const totalCitations = parseInt(citationMatches[0].replace(/<[^>]*>/g, '').replace(/,/g, '')) || 0;
+              const hIndex = parseInt(citationMatches[1].replace(/<[^>]*>/g, '').replace(/,/g, '')) || 0;
+              const i10Index = parseInt(citationMatches[2].replace(/<[^>]*>/g, '').replace(/,/g, '')) || 0;
+              
+              result.data.totalCitations = totalCitations;
+              result.data.hIndex = hIndex;
+              result.data.i10Index = i10Index;
+              
+              log(`引用数据提取成功: 总引用=${totalCitations}, H指数=${hIndex}, i10指数=${i10Index}`);
+          } else {
+              result.errors.push('无法提取引用数据');
+              log('引用数据提取失败', 'warn');
+              result.debugInfo.citationMatches = citationMatches;
+              
+              // 尝试其他可能的数字匹配
+              const numberMatches = tableHtml.match(/>\s*(\d+(?:,\d+)*)\s*</g);
+              result.debugInfo.numberMatches = numberMatches;
+          }
+      } else {
+          result.errors.push('无法找到统计表格');
+          log('统计表格提取失败', 'warn');
+          
+          // 查找可能的表格结构
+          const possibleTables = html.match(/<table[^>]*>[\s\S]*?<\/table>/g);
+          result.debugInfo.possibleTables = possibleTables ? possibleTables.length : 0;
+      }
+      
+      // 测试机构信息提取
+      let affiliationMatch = html.match(/<div[^>]*class=["']gsc_prf_il["'][^>]*>([^<]+)<\/div>/);
+      if (!affiliationMatch) {
+          affiliationMatch = html.match(/<div[^>]*class=gsc_prf_il[^>]*>([^<]+)<\/div>/);
+      }
+      
+      if (affiliationMatch) {
+          result.data.affiliation = affiliationMatch[1].trim();
+          log(`机构信息提取成功: ${result.data.affiliation}`);
+      } else {
+          result.errors.push('无法提取机构信息');
+          log('机构信息提取失败', 'warn');
+      }
+      
+      // 测试研究兴趣提取
+      let interestsMatches = html.match(/<a[^>]*class=["']gs_ibl["'][^>]*>([^<]+)<\/a>/g);
+      if (!interestsMatches) {
+          interestsMatches = html.match(/<a[^>]*class=gs_ibl[^>]*>([^<]+)<\/a>/g);
+      }
+      
+      if (interestsMatches) {
+          const interests = interestsMatches.map(match => 
+              match.replace(/<[^>]*>/g, '').trim()
+          ).join(', ');
+          result.data.interests = interests;
+          log(`研究兴趣提取成功: ${interests}`);
+      } else {
+          result.errors.push('无法提取研究兴趣');
+          log('研究兴趣提取失败', 'warn');
+      }
+      
+      result.success = result.errors.length === 0;
+      
+      if (result.success) {
+          log('HTML 解析完全成功', 'success');
+      } else {
+          log(`HTML 解析部分成功，${result.errors.length} 个错误`, 'warn');
+      }
+      
+  } catch (error) {
+      result.errors.push(error.message);
+      log(`HTML 解析异常: ${error.message}`, 'error');
+  }
+  
+  return result;
+}
+
+function showRegexTester() {
+  const tester = document.getElementById('regexTester');
+  tester.style.display = tester.style.display === 'none' ? 'block' : 'none';
+}
+
+function testCustomRegex() {
+  const html = document.getElementById('htmlInput').value.trim();
+  if (!html) {
+      alert('请先输入 HTML 代码');
+      return;
+  }
+  
+  // 测试姓名正则
+  const nameRegex = document.getElementById('nameRegex').value;
+  const nameResult = document.getElementById('nameRegexResult');
+  try {
+      const nameMatch = html.match(new RegExp(nameRegex));
+      nameResult.textContent = nameMatch ? `匹配成功: ${nameMatch[1]}` : '无匹配';
+      nameResult.style.color = nameMatch ? 'green' : 'red';
+  } catch (error) {
+      nameResult.textContent = `正则错误: ${error.message}`;
+      nameResult.style.color = 'red';
+  }
+  
+  // 测试表格正则
+  const tableRegex = document.getElementById('tableRegex').value;
+  const tableResult = document.getElementById('tableRegexResult');
+  try {
+      const tableMatch = html.match(new RegExp(tableRegex));
+      tableResult.textContent = tableMatch ? `匹配成功，长度: ${tableMatch[0].length}` : '无匹配';
+      tableResult.style.color = tableMatch ? 'green' : 'red';
+      
+      // 如果表格匹配成功，测试引用数据
+      if (tableMatch) {
+          const citationRegex = document.getElementById('citationRegex').value;
+          const citationResult = document.getElementById('citationRegexResult');
+          try {
+              const citationMatches = tableMatch[0].match(new RegExp(citationRegex, 'g'));
+              if (citationMatches) {
+                  const values = citationMatches.map(match => 
+                      match.replace(/<[^>]*>/g, '').trim()
+                  );
+                  citationResult.textContent = `匹配成功: ${values.join(', ')}`;
+                  citationResult.style.color = 'green';
+              } else {
+                  citationResult.textContent = '无匹配';
+                  citationResult.style.color = 'red';
+              }
+          } catch (error) {
+              citationResult.textContent = `正则错误: ${error.message}`;
+              citationResult.style.color = 'red';
+          }
+      }
+  } catch (error) {
+      tableResult.textContent = `正则错误: ${error.message}`;
+      tableResult.style.color = 'red';
+  }
+}
+
+function loadSampleHtml() {
+  const sampleHtml = `
+<!DOCTYPE html>
+<html>
+<head><title>Google Scholar</title></head>
+<body>
+<div id="gsc_prf_in">张三</div>
+<div class="gsc_prf_il">清华大学</div>
+<table id="gsc_rsb_st">
+<tbody>
+<tr>
+<td class="gsc_rsb_sc1"><a href="#" class="gsc_rsb_f">引用次数</a></td>
+<td class="gsc_rsb_sc1"><a href="#" class="gsc_rsb_f">全部</a></td>
+<td class="gsc_rsb_sc1"><a href="#" class="gsc_rsb_f">自 2019</a></td>
+</tr>
+<tr>
+<td class="gsc_rsb_sc1"><a href="#" class="gsc_rsb_f">引用次数</a></td>
+<td class="gsc_rsb_std">1,234</td>
+<td class="gsc_rsb_std">567</td>
+</tr>
+<tr>
+<td class="gsc_rsb_sc1"><a href="#" class="gsc_rsb_f">h 指数</a></td>
+<td class="gsc_rsb_std">25</td>
+<td class="gsc_rsb_std">18</td>
+</tr>
+<tr>
+<td class="gsc_rsb_sc1"><a href="#" class="gsc_rsb_f">i10 指数</a></td>
+<td class="gsc_rsb_std">45</td>
+<td class="gsc_rsb_std">32</td>
+</tr>
+</tbody>
+</table>
+<a class="gs_ibl">机器学习</a>
+<a class="gs_ibl">深度学习</a>
+</body>
+</html>
+  `;
+  
+  document.getElementById('htmlInput').value = sampleHtml;
+  log('已加载示例 HTML', 'info');
+}
+
+async function checkExtensionStatus() {
+  const resultDiv = document.getElementById('statusResult');
+  
+  try {
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+          throw new Error('Chrome 扩展 API 不可用');
+      }
+      
+      const manifest = chrome.runtime.getManifest();
+      const status = {
+          extensionId: chrome.runtime.id,
+          version: manifest.version,
+          name: manifest.name,
+          permissions: manifest.permissions || [],
+          hostPermissions: manifest.host_permissions || []
+      };
+      
+      showResult(resultDiv, JSON.stringify(status, null, 2), 'success');
+      log('扩展状态检查成功', 'success');
+      
+  } catch (error) {
+      showResult(resultDiv, `扩展状态检查失败: ${error.message}`, 'error');
+      log(`扩展状态检查失败: ${error.message}`, 'error');
+  }
+}
+
+async function checkStorageData() {
+  const resultDiv = document.getElementById('statusResult');
+  
+  try {
+      if (typeof chrome === 'undefined' || !chrome.storage) {
+          throw new Error('Chrome 存储 API 不可用');
+      }
+      
+      chrome.storage.local.get(null, (result) => {
+          const storageInfo = {
+              totalKeys: Object.keys(result).length,
+              authors: result.authors ? result.authors.length : 0,
+              lastUpdateTime: result.lastUpdateTime || '未设置',
+              data: result
+          };
+          
+          showResult(resultDiv, JSON.stringify(storageInfo, null, 2), 'success');
+          log('存储数据检查成功', 'success');
+      });
+      
+  } catch (error) {
+      showResult(resultDiv, `存储数据检查失败: ${error.message}`, 'error');
+      log(`存储数据检查失败: ${error.message}`, 'error');
+  }
+}
+
+async function triggerManualRefresh() {
+  const resultDiv = document.getElementById('statusResult');
+  
+  try {
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+          throw new Error('Chrome 扩展 API 不可用');
+      }
+      
+      // 发送消息到后台脚本触发手动刷新
+      chrome.runtime.sendMessage({action: 'manual_refresh'}, (response) => {
+          if (chrome.runtime.lastError) {
+              showResult(resultDiv, `触发刷新失败: ${chrome.runtime.lastError.message}`, 'error');
+              log(`触发刷新失败: ${chrome.runtime.lastError.message}`, 'error');
+          } else {
+              showResult(resultDiv, '手动刷新已触发，请查看日志', 'success');
+              log('手动刷新已触发', 'success');
+          }
+      });
+      
+  } catch (error) {
+      showResult(resultDiv, `触发刷新失败: ${error.message}`, 'error');
+      log(`触发刷新失败: ${error.message}`, 'error');
+  }
+}
+</script>
+</body>
+</html>
