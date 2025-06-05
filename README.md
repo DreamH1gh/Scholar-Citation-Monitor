@@ -14,6 +14,11 @@ Or maybe you're in a friendly (but totally not competitive 😏) citation race w
 
 **Scholar Citation Monitor** is here to save you from the endless tab-opening madness! This Chrome extension monitors your favorite researchers' citation counts in the background, so you can focus on actual research instead of refreshing browsers like a maniac.
 
+**🆕 New Features Added:**
+- **📊 Complete Publication Monitoring**: Track all papers from a researcher's Google Scholar profile
+- **📈 Detailed Citation Changes**: View specific citation changes for papers
+- **🔄 Enhanced Auto-Update**: Improved background refresh system with smarter scheduling and error handling
+
 ### 🚀 Features
 
 - 📊 **Real-time Citation Tracking**: Monitor multiple authors without opening a single tab
@@ -107,6 +112,11 @@ Feel free to open an issue or submit a pull request. We welcome all contribution
 或者你正在和实验室的好兄弟们进行一场友好的（但绝对不是竞争性的😏）引用数比赛，看谁能赢得"本月最多引用论文"奖？
 
 **学术引用监控器**来拯救你脱离无尽的标签页打开狂潮！这个Chrome扩展可以在后台监控你关注的研究者的引用数变化，让你专注于真正的研究，而不是像疯子一样刷新浏览器。
+
+**🆕 新增功能：**
+- **📊 完整论文监控**：追踪研究者Google Scholar主页上的所有论文
+- **📈 详细引用变化**：查看论文的具体引用变化情况
+- **🔄 增强自动更新**：改进的后台刷新系统，具备更智能的调度和错误处理机制
 
 ### 🚀 功能特色
 
