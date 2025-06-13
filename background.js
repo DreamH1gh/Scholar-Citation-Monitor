@@ -761,7 +761,7 @@ class ScholarBackgroundService {
           }
 
           // 3. 提取研究领域 - 从meta description的最后部分提取
-          const interestsMatch = html.match(/Cited by \d+[^"]*?((?:‪[^‬]+‬(?:\s*-\s*)?)+)/);
+          const interestsMatch = html.match(/\d+[^"]*?((?:‪[^‬]+‬(?:\s*-\s*)?)+)/);
           let interests = '未知领域';
           if (interestsMatch) {
               const interestsList = interestsMatch[1].match(/‪([^‬]+)‬/g);
