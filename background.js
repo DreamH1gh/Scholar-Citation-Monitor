@@ -1,4 +1,4 @@
-// background.js - 使用正则表达式版本，支持完整论文变化检测
+// background.js - 修复版本，确保定时任务持续运行
 class ScholarBackgroundService {
   constructor() {
       this.scholarDomains = [
@@ -13,45 +13,311 @@ class ScholarBackgroundService {
           'scholar.google.ca',
           'scholar.google.cn'
       ];
+      this.REFRESH_INTERVAL_MINUTES = 30;
+      this.ALARM_NAME = 'scholarAutoRefresh';
+      this.KEEPALIVE_ALARM = 'keepAlive';
+      
+      console.log('🚀 Scholar Background Service 启动');
       this.init();
   }
 
   init() {
-      this.setupAutoRefresh();
+      this.setupAlarms();
+      this.setupEventListeners();
+      
+      // 启动后立即执行一次检查
+      setTimeout(() => {
+          this.performStartupCheck();
+      }, 3000);
+  }
 
-      chrome.runtime.onInstalled.addListener(() => {
-          console.log('Scholar Monitor 扩展已安装');
-          // 请求通知权限
-          chrome.notifications.create({
-              type: 'basic',
-              iconUrl: 'icon48.png',
-              title: 'Scholar Monitor',
-              message: '扩展已安装，将自动监控学者引用变化'
+  setupAlarms() {
+      // 先清除现有的alarm
+      chrome.alarms.clear(this.ALARM_NAME, (wasCleared) => {
+          console.log(`🔄 清除现有定时任务: ${wasCleared ? '成功' : '无需清除'}`);
+          
+          // 创建新的定时任务 - 关键修复：立即开始，然后周期执行
+          chrome.alarms.create(this.ALARM_NAME, {
+              delayInMinutes: 0.1,  // 6秒后立即执行第一次
+              periodInMinutes: this.REFRESH_INTERVAL_MINUTES
+          });
+          
+          console.log(`⏰ 已创建定时任务: 立即开始，然后每${this.REFRESH_INTERVAL_MINUTES}分钟执行`);
+          
+          // 验证创建是否成功
+          setTimeout(() => {
+              chrome.alarms.get(this.ALARM_NAME, (alarm) => {
+                  if (alarm) {
+                      console.log('✅ 定时任务创建成功，下次执行:', new Date(alarm.scheduledTime));
+                  } else {
+                      console.error('❌ 定时任务创建失败，重试...');
+                      this.setupAlarms(); // 重试
+                  }
+              });
+          }, 1000);
+      });
+
+      // 创建保活alarm
+      chrome.alarms.create(this.KEEPALIVE_ALARM, {
+          delayInMinutes: 1,
+          periodInMinutes: 5
+      });
+  }
+
+  setupEventListeners() {
+      // 最重要：Alarm监听器
+      chrome.alarms.onAlarm.addListener((alarm) => {
+          console.log(`🔔 Alarm触发: ${alarm.name} at ${new Date().toISOString()}`);
+          
+          if (alarm.name === this.ALARM_NAME) {
+              console.log('📚 开始执行定时刷新任务');
+              this.executeAutoRefresh().catch(error => {
+                  console.error('❌ 定时刷新失败:', error);
+              });
+          } else if (alarm.name === this.KEEPALIVE_ALARM) {
+              console.log('💓 保活检查');
+              this.performHealthCheck();
+          }
+      });
+
+      // 扩展安装/更新事件
+      chrome.runtime.onInstalled.addListener((details) => {
+          console.log('📦 扩展事件:', details.reason);
+          this.setupAlarms();
+          
+          if (details.reason === 'install') {
+              chrome.notifications.create({
+                  type: 'basic',
+                  iconUrl: 'icon48.png',
+                  title: 'Scholar Monitor',
+                  message: '扩展已安装，将每30分钟自动监控学者引用变化'
+              });
+          }
+      });
+
+      // Chrome启动事件
+      chrome.runtime.onStartup.addListener(() => {
+          console.log('🚀 Chrome启动，重新设置定时任务');
+          this.setupAlarms();
+      });
+
+      // 消息监听器 - 修复：添加缺失的消息处理
+      chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+          console.log('📨 收到消息:', request.action);
+          
+          this.handleMessage(request, sender)
+              .then(response => {
+                  console.log('✅ 消息处理完成:', request.action);
+                  sendResponse(response);
+              })
+              .catch(error => {
+                  console.error('❌ 消息处理失败:', error);
+                  sendResponse({success: false, error: error.message});
+              });
+          
+          return true; // 保持消息通道开放
+      });
+
+      // 存储变化监听器
+      chrome.storage.onChanged.addListener((changes, namespace) => {
+          if (namespace === 'local' && changes.authors) {
+              console.log('📚 作者列表发生变化，确保定时任务正常');
+              this.ensureAlarmIsActive();
+          }
+      });
+  }
+
+  async handleMessage(request, sender) {
+      switch (request.action) {
+          case 'getStatus':
+              return {
+                  success: true, 
+                  status: await this.getStatus()
+              };
+              
+          case 'manualRefresh':
+              console.log('🔄 手动刷新请求');
+              await this.executeAutoRefresh();
+              return {success: true, message: '手动刷新完成'};
+              
+          case 'resetAlarm':
+              console.log('⚡ 重置定时任务请求');
+              this.setupAlarms();
+              return {success: true, message: '定时任务已重置'};
+              
+          case 'clearLogs':
+              await this.saveRefreshLogs([]);
+              return {success: true, message: '日志已清除'};
+              
+          case 'testAlarm':
+              return await this.testAlarmFunctionality();
+              
+          default:
+              throw new Error(`未知操作: ${request.action}`);
+      }
+  }
+
+  // 启动检查
+  async performStartupCheck() {
+      try {
+          console.log('🔍 执行启动检查...');
+          
+          const authors = await this.getStoredAuthors();
+          console.log(`📊 当前监控 ${authors.length} 位作者`);
+          
+          if (authors.length === 0) {
+              console.log('📝 暂无需要监控的作者');
+              return;
+          }
+
+          // 检查上次更新时间
+          const lastUpdateTime = await this.getLastUpdateTime();
+          const now = new Date();
+          const timeSinceLastUpdate = lastUpdateTime ? 
+              (now - new Date(lastUpdateTime)) / (1000 * 60) : Infinity;
+
+          console.log(`⏰ 距离上次更新: ${Math.round(timeSinceLastUpdate)}分钟`);
+
+          // 如果超过35分钟没有更新，立即执行一次
+          if (timeSinceLastUpdate > 35) {
+              console.log('⚡ 距离上次更新时间过长，立即执行刷新');
+              await this.executeAutoRefresh();
+          }
+
+          this.ensureAlarmIsActive();
+
+      } catch (error) {
+          console.error('❌ 启动检查失败:', error);
+      }
+  }
+
+  // 健康检查
+  async performHealthCheck() {
+      try {
+          // 检查主alarm是否存在
+          chrome.alarms.get(this.ALARM_NAME, (alarm) => {
+              if (!alarm) {
+                  console.log('⚠️ 主定时任务丢失，重新创建');
+                  this.setupAlarms();
+              } else {
+                  console.log('✅ 定时任务正常，下次执行:', new Date(alarm.scheduledTime));
+              }
+          });
+          
+          // 检查是否有待处理的作者
+          const authors = await this.getStoredAuthors();
+          const lastUpdate = await this.getLastUpdateTime();
+          
+          if (lastUpdate) {
+              const timeSinceUpdate = (Date.now() - new Date(lastUpdate)) / (1000 * 60);
+              console.log(`⏰ 健康检查 - 距离上次更新: ${Math.round(timeSinceUpdate)} 分钟`);
+              
+              // 如果超过40分钟没有更新且有作者需要监控，触发一次刷新
+              if (timeSinceUpdate > 40 && authors.length > 0) {
+                  console.log('🚨 长时间未更新，触发紧急刷新');
+                  this.executeAutoRefresh();
+              }
+          }
+          
+      } catch (error) {
+          console.error('❌ 健康检查失败:', error);
+      }
+  }
+
+  // 确保alarm处于活动状态
+  async ensureAlarmIsActive() {
+      return new Promise((resolve) => {
+          chrome.alarms.get(this.ALARM_NAME, (alarm) => {
+              if (!alarm) {
+                  console.log('⚠️ 定时任务不存在，重新创建');
+                  this.setupAlarms();
+              } else {
+                  console.log('✅ 定时任务正常运行，下次执行时间:', new Date(alarm.scheduledTime));
+              }
+              resolve();
           });
       });
   }
 
-  setupAutoRefresh() {
-      setInterval(async () => {
-          console.log('开始自动刷新...');
+  // 执行自动刷新
+  async executeAutoRefresh() {
+      const startTime = new Date();
+      console.log('🔄 开始执行自动刷新...', startTime.toISOString());
+      
+      try {
           await this.autoRefreshAll();
-      }, 30 * 60 * 1000);
+          
+          const endTime = new Date();
+          const duration = endTime - startTime;
+          console.log(`✅ 自动刷新完成，耗时: ${duration}ms`);
+          
+          await this.recordRefreshAttempt(startTime, endTime, true);
+          
+      } catch (error) {
+          const endTime = new Date();
+          console.error('❌ 自动刷新失败:', error);
+          
+          await this.recordRefreshAttempt(startTime, endTime, false, error.message);
+          
+          // 发送错误通知
+          chrome.notifications.create({
+              type: 'basic',
+              iconUrl: 'icon48.png',
+              title: '❌ Scholar Monitor 错误',
+              message: `自动刷新失败: ${error.message.substring(0, 100)}`
+          });
+      }
+  }
 
-      setTimeout(async () => {
-          console.log('启动后首次自动刷新...');
-          await this.autoRefreshAll();
-      }, 5000);
+  // 测试alarm功能
+  async testAlarmFunctionality() {
+      return new Promise((resolve) => {
+          const testAlarmName = 'test_alarm_' + Date.now();
+          
+          console.log('🧪 开始测试alarm功能...');
+          
+          // 创建测试alarm
+          chrome.alarms.create(testAlarmName, {delayInMinutes: 0.1});
+          
+          // 监听测试alarm
+          const testListener = (alarm) => {
+              if (alarm.name === testAlarmName) {
+                  chrome.alarms.onAlarm.removeListener(testListener);
+                  chrome.alarms.clear(testAlarmName);
+                  console.log('✅ Alarm功能测试成功');
+                  resolve({
+                      success: true, 
+                      message: 'Alarm功能正常',
+                      testTime: new Date().toISOString()
+                  });
+              }
+          };
+          
+          chrome.alarms.onAlarm.addListener(testListener);
+          
+          // 10秒后超时
+          setTimeout(() => {
+              chrome.alarms.onAlarm.removeListener(testListener);
+              chrome.alarms.clear(testAlarmName);
+              console.log('❌ Alarm功能测试超时');
+              resolve({
+                  success: false, 
+                  message: 'Alarm功能测试超时',
+                  testTime: new Date().toISOString()
+              });
+          }, 10000);
+      });
   }
 
   async autoRefreshAll() {
       try {
           const authors = await this.getStoredAuthors();
           if (authors.length === 0) {
-              console.log('没有需要刷新的作者');
+              console.log('📝 没有需要刷新的作者');
               return;
           }
 
-          console.log(`开始刷新 ${authors.length} 位作者...`);
+          console.log(`🔄 开始刷新 ${authors.length} 位作者...`);
           let successCount = 0;
           let errorCount = 0;
           const errors = [];
@@ -60,15 +326,18 @@ class ScholarBackgroundService {
 
           for (let i = 0; i < authors.length; i++) {
               const author = authors[i];
-              console.log(`正在刷新作者: ${author.name}`);
+              console.log(`👤 正在刷新作者: ${author.name} (${i + 1}/${authors.length})`);
               
               try {
+                  // 添加请求间隔，避免被限制
                   if (i > 0) {
-                      await new Promise(resolve => setTimeout(resolve, 2000));
+                      await new Promise(resolve => setTimeout(resolve, 3000));
                   }
                   
-                  // 获取完整的作者信息，包括所有论文
-                  const updatedInfo = await this.fetchCompleteAuthorInfoWithRetry(author.url, author.workingDomain);
+                  const updatedInfo = await this.fetchCompleteAuthorInfoWithRetry(
+                      author.url, 
+                      author.workingDomain
+                  );
                   
                   // 检查总引用变化
                   if (updatedInfo.totalCitations !== author.totalCitations) {
@@ -80,19 +349,16 @@ class ScholarBackgroundService {
                       };
                       citationChanges.push(change);
                       
-                      // 更新变化标记
                       updatedInfo.hasNewCitations = true;
                       updatedInfo.previousCitations = author.totalCitations;
                       updatedInfo.changeTimestamp = new Date().toISOString();
                       
-                      console.log(`${author.name} 总引用有变化: ${author.totalCitations} -> ${updatedInfo.totalCitations} (+${change.increase})`);
+                      console.log(`📈 ${author.name} 总引用变化: ${author.totalCitations} -> ${updatedInfo.totalCitations} (+${change.increase})`);
                   } else {
-                      // 保持原有的变化状态
                       updatedInfo.hasNewCitations = author.hasNewCitations;
                       updatedInfo.previousCitations = author.previousCitations;
                       updatedInfo.changeTimestamp = author.changeTimestamp;
                       
-                      // 如果变化时间超过24小时，清除变化标记
                       if (!this.isChangeRecent(updatedInfo.changeTimestamp)) {
                           updatedInfo.hasNewCitations = false;
                           delete updatedInfo.previousCitations;
@@ -101,7 +367,8 @@ class ScholarBackgroundService {
                   }
                   
                   // 检查论文引用变化
-                  if (author.papers && author.papers.length > 0 && updatedInfo.papers && updatedInfo.papers.length > 0) {
+                  if (author.papers && author.papers.length > 0 && 
+                      updatedInfo.papers && updatedInfo.papers.length > 0) {
                       const paperChangeList = this.comparePapers(author.papers, updatedInfo.papers);
                       if (paperChangeList.length > 0) {
                           updatedInfo.paperChanges = paperChangeList;
@@ -109,64 +376,90 @@ class ScholarBackgroundService {
                               authorName: author.name,
                               changes: paperChangeList
                           });
-                          console.log(`${author.name} 检测到 ${paperChangeList.length} 篇论文引用变化`);
-                      } else {
-                          // 保持原有的论文变化记录（如果存在且时间未过期）
-                          if (author.paperChanges && this.isChangeRecent(author.changeTimestamp)) {
-                              updatedInfo.paperChanges = author.paperChanges;
-                          }
+                          console.log(`📄 ${author.name} 检测到 ${paperChangeList.length} 篇论文引用变化`);
+                      } else if (author.paperChanges && this.isChangeRecent(author.changeTimestamp)) {
+                          updatedInfo.paperChanges = author.paperChanges;
                       }
                   }
                   
-                  // 合并数据：保持机构和研究领域不变，更新其他信息
                   authors[i] = {
-                      ...author, // 保持原有的所有信息
-                      ...updatedInfo, // 覆盖更新的信息
+                      ...author,
+                      ...updatedInfo,
                       lastUpdated: new Date().toISOString()
                   };
                   
                   successCount++;
-                  console.log(`${author.name} 刷新成功`);
+                  console.log(`✅ ${author.name} 刷新成功`);
                   
               } catch (error) {
-                  console.error(`自动刷新 ${author.name} 失败:`, error.message);
+                  console.error(`❌ 自动刷新 ${author.name} 失败:`, error.message);
                   errorCount++;
                   errors.push({
                       name: author.name,
                       error: error.message
                   });
                   
-                  // 只更新最后更新时间，保持其他信息不变
                   authors[i].lastUpdated = new Date().toISOString();
+                  authors[i].lastError = error.message;
               }
           }
 
           await this.saveAuthors(authors);
-          await this.setLastUpdateTime();
           
-          console.log(`自动刷新完成: 成功 ${successCount}, 失败 ${errorCount}`);
+          console.log(`📊 自动刷新完成: 成功 ${successCount}, 失败 ${errorCount}`);
           
-          // 显示引用变化通知
+          // 显示变化通知
           if (citationChanges.length > 0 || paperChanges.length > 0) {
               await this.showChangeNotifications(citationChanges, paperChanges);
           }
           
           if (errors.length > 0) {
-              console.log('失败详情:', errors);
+              console.log('❌ 失败详情:', errors);
           }
           
       } catch (error) {
-          console.error('自动刷新过程出错:', error);
+          console.error('❌ 自动刷新过程出错:', error);
+          throw error;
       }
   }
 
-  // 显示变化通知（包括总引用和论文变化）
+  // 记录刷新尝试
+  async recordRefreshAttempt(startTime, endTime, success, errorMessage = null) {
+      const duration = endTime - startTime;
+      
+      const refreshLog = {
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          duration: duration,
+          success: success,
+          error: errorMessage
+      };
+
+      try {
+          const logs = await this.getRefreshLogs();
+          logs.push(refreshLog);
+          
+          // 只保留最近20次记录
+          if (logs.length > 20) {
+              logs.splice(0, logs.length - 20);
+          }
+
+          await this.saveRefreshLogs(logs);
+          await this.setLastUpdateTime();
+          
+          console.log(`📊 刷新记录已保存 ${success ? '✅' : '❌'}`);
+          
+      } catch (error) {
+          console.error('❌ 保存刷新记录失败:', error);
+      }
+  }
+
+  // 显示变化通知
   async showChangeNotifications(citationChanges, paperChanges) {
       const totalCitationIncrease = citationChanges.reduce((sum, change) => sum + change.increase, 0);
       const totalPaperChanges = paperChanges.reduce((sum, author) => sum + author.changes.length, 0);
       
       if (citationChanges.length === 1 && paperChanges.length <= 1) {
-          // 单个作者变化
           const citationChange = citationChanges[0];
           const authorPaperChanges = paperChanges.find(pc => pc.authorName === citationChange.name);
           
@@ -183,11 +476,9 @@ class ScholarBackgroundService {
               message: message
           });
       } else {
-          // 多个作者变化
           let message = '';
           
           if (citationChanges.length > 0) {
-              const authorNames = citationChanges.map(c => c.name).join(', ');
               message += `${citationChanges.length} 位学者总引用增加 ${totalCitationIncrease} 次`;
           }
           
@@ -203,6 +494,104 @@ class ScholarBackgroundService {
               message: message
           });
       }
+  }
+
+  async getStatus() {
+      const [lastUpdateTime, authors, refreshLogs] = await Promise.all([
+          this.getLastUpdateTime(),
+          this.getStoredAuthors(),
+          this.getRefreshLogs()
+      ]);
+      
+      return new Promise((resolve) => {
+          chrome.alarms.get(this.ALARM_NAME, (alarm) => {
+              resolve({
+                  lastUpdateTime,
+                  authorsCount: authors.length,
+                  alarmActive: !!alarm,
+                  nextAlarmTime: alarm ? new Date(alarm.scheduledTime).toISOString() : null,
+                  recentLogs: refreshLogs.slice(-5),
+                  serviceWorkerStatus: 'active',
+                  currentTime: new Date().toISOString()
+              });
+          });
+      });
+  }
+
+  // 辅助方法
+  isChangeRecent(changeTimestamp) {
+      if (!changeTimestamp) return false;
+      const changeTime = new Date(changeTimestamp);
+      const now = new Date();
+      const hoursDiff = (now - changeTime) / (1000 * 60 * 60);
+      return hoursDiff < 24;
+  }
+
+  comparePapers(oldPapers, newPapers) {
+      const changes = [];
+      
+      for (const newPaper of newPapers) {
+          const oldPaper = oldPapers.find(p => p.title === newPaper.title);
+          if (oldPaper && oldPaper.citations !== newPaper.citations) {
+              changes.push({
+                  title: newPaper.title,
+                  oldCitations: oldPaper.citations,
+                  newCitations: newPaper.citations,
+                  increase: newPaper.citations - oldPaper.citations
+              });
+          }
+      }
+      
+      return changes;
+  }
+
+  // 存储相关方法
+  async getRefreshLogs() {
+      return new Promise((resolve) => {
+          chrome.storage.local.get(['refreshLogs'], (result) => {
+              resolve(result.refreshLogs || []);
+          });
+      });
+  }
+
+  async saveRefreshLogs(logs) {
+      return new Promise((resolve) => {
+          chrome.storage.local.set({refreshLogs: logs}, resolve);
+      });
+  }
+
+  async getLastUpdateTime() {
+      return new Promise((resolve) => {
+          chrome.storage.local.get(['lastUpdateTime'], (result) => {
+              resolve(result.lastUpdateTime);
+          });
+      });
+  }
+
+  async setLastUpdateTime() {
+      const now = new Date().toISOString();
+      console.log('💾 设置最后更新时间:', now);
+      
+      return new Promise((resolve) => {
+          chrome.storage.local.set({lastUpdateTime: now}, () => {
+              console.log('✅ 最后更新时间已保存');
+              resolve();
+          });
+      });
+  }
+
+  async saveAuthors(authors) {
+      return new Promise((resolve) => {
+          chrome.storage.local.set({authors}, resolve);
+      });
+  }
+
+  async getStoredAuthors() {
+      return new Promise((resolve) => {
+          chrome.storage.local.get(['authors'], (result) => {
+              resolve(result.authors || []);
+          });
+      });
   }
 
   // 获取完整作者信息（包括所有论文）
@@ -715,39 +1104,23 @@ extractPapersFromHtmlWithRegex(html, startIndex = 0) {
       });
       
       // 按变化量排序（从大到小）
-      changes.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+    //   changes.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
       
       return changes;
   }
+}
 
-  isChangeRecent(changeTimestamp) {
-      if (!changeTimestamp) return false;
-      const changeTime = new Date(changeTimestamp);
-      const now = new Date();
-      const hoursDiff = (now - changeTime) / (1000 * 60 * 60);
-      return hoursDiff < 24;
-  }
+// 启动后台服务
+// 创建全局实例
+const scholarService = new ScholarBackgroundService();
 
-  async saveAuthors(authors) {
-      return new Promise((resolve) => {
-          chrome.storage.local.set({authors}, resolve);
-      });
-  }
+// 保持Service Worker活跃
+console.log('🔥 Scholar Monitor Service Worker 已启动');
+console.log('⏰ 当前时间:', new Date().toISOString());
 
-  async getStoredAuthors() {
-      return new Promise((resolve) => {
-          chrome.storage.local.get(['authors'], (result) => {
-              resolve(result.authors || []);
-          });
-      });
-  }
-
-  async setLastUpdateTime() {
-      const now = new Date().toISOString();
-      return new Promise((resolve) => {
-          chrome.storage.local.set({lastUpdateTime: now}, resolve);
-      });
-  }
+// 导出服务实例供其他脚本使用
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = scholarService;
 }
 
 // 启动后台服务
