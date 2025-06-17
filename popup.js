@@ -159,26 +159,56 @@ parseBasicInfo(html) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
+    // 提取作者姓名
     const nameElement = doc.querySelector('#gsc_prf_in');
     if (!nameElement) {
         throw new Error('无法找到作者姓名');
     }
     const name = nameElement.textContent.trim();
 
-    const citationRows = doc.querySelectorAll('#gsc_rsb_st tbody tr');
-    if (citationRows.length < 3) {
-        throw new Error('无法找到引用数据');
-    }
-
-    const totalCitations = parseInt(citationRows[0].querySelector('.gsc_rsb_std')?.textContent.replace(/,/g, '')) || 0;
-    const hIndex = parseInt(citationRows[1].querySelector('.gsc_rsb_std')?.textContent.replace(/,/g, '')) || 0;
-    const i10Index = parseInt(citationRows[2].querySelector('.gsc_rsb_std')?.textContent.replace(/,/g, '')) || 0;
-
+    // 提取机构信息
     const affiliationElement = doc.querySelector('#gsc_prf_i .gsc_prf_il');
     const affiliation = affiliationElement ? affiliationElement.textContent.trim() : '未知机构';
 
+    // 提取研究兴趣
     const interestsElements = doc.querySelectorAll('#gsc_prf_int a.gs_ibl');
     const interests = Array.from(interestsElements).map(el => el.textContent.trim()).join(', ') || '未知领域';
+
+    // 尝试提取引用数据 - 增强版，支持零引用情况
+    let totalCitations = 0;
+    let hIndex = 0;
+    let i10Index = 0;
+
+    try {
+        // 方法1：标准表格解析
+        const citationTable = doc.querySelector('#gsc_rsb_st');
+        if (citationTable) {
+            const citationRows = citationTable.querySelectorAll('tbody tr');
+            
+            if (citationRows.length >= 3) {
+                // 安全地解析每一行的数据
+                totalCitations = this.parseTableCellValue(citationRows[0]);
+                hIndex = this.parseTableCellValue(citationRows[1]);
+                i10Index = this.parseTableCellValue(citationRows[2]);
+                
+                console.log(`标准表格解析成功: 总引用=${totalCitations}, H指数=${hIndex}, i10指数=${i10Index}`);
+            } else {
+                console.log(`表格行数不足: ${citationRows.length}, 尝试备用方法`);
+                throw new Error('表格行数不足');
+            }
+        } else {
+            console.log('未找到引用统计表格，尝试备用方法');
+            throw new Error('未找到引用统计表格');
+        }
+    } catch (error) {
+        console.log('标准解析失败，使用备用方法:', error.message);
+        
+        // 方法2：备用解析 - 查找所有可能的引用数据
+        const citationData = this.parseAlternativeCitationData(doc, html);
+        totalCitations = citationData.totalCitations;
+        hIndex = citationData.hIndex;
+        i10Index = citationData.i10Index;
+    }
 
     return {
         name,
@@ -189,6 +219,108 @@ parseBasicInfo(html) {
         i10Index
     };
 }
+
+// 新增：安全地解析表格单元格的值
+parseTableCellValue(row) {
+    try {
+        const cell = row.querySelector('.gsc_rsb_std');
+        if (!cell) {
+            console.log('未找到 .gsc_rsb_std 单元格');
+            return 0;
+        }
+        
+        const textContent = cell.textContent || cell.innerText || '';
+        const cleanText = textContent.trim();
+        
+        // 处理各种空值情况
+        if (!cleanText || 
+            cleanText === '' || 
+            cleanText === '&nbsp;' || 
+            cleanText === '-' || 
+            cleanText === '—' ||
+            cleanText === 'N/A') {
+            return 0;
+        }
+        
+        // 移除逗号并解析数字
+        const numericValue = cleanText.replace(/[,\s]/g, '');
+        const parsed = parseInt(numericValue);
+        
+        // 如果解析失败或为负数，返回0
+        return (isNaN(parsed) || parsed < 0) ? 0 : parsed;
+        
+    } catch (error) {
+        console.log('解析表格单元格失败:', error);
+        return 0;
+    }
+}
+
+// 新增：备用引用数据解析方法
+parseAlternativeCitationData(doc, html) {
+    console.log('使用备用方法解析引用数据...');
+    
+    try {
+        // 方法2a：查找所有包含数字的统计相关元素
+        const allStatElements = doc.querySelectorAll('.gsc_rsb_std, .gs_ibl, [class*="stat"], [class*="citation"]');
+        const foundNumbers = [];
+        
+        allStatElements.forEach(element => {
+            const text = element.textContent.trim();
+            const number = parseInt(text.replace(/[,\s]/g, ''));
+            if (!isNaN(number) && number >= 0) {
+                foundNumbers.push(number);
+            }
+        });
+        
+        if (foundNumbers.length >= 3) {
+            console.log('通过备用方法找到数字:', foundNumbers);
+            return {
+                totalCitations: foundNumbers[0] || 0,
+                hIndex: foundNumbers[1] || 0,
+                i10Index: foundNumbers[2] || 0
+            };
+        }
+        
+        // // 方法2b：正则表达式搜索
+        // const citationMatches = html.match(/Citations[^0-9]*(\d+)/i);
+        // const hIndexMatches = html.match(/h-index[^0-9]*(\d+)/i);
+        // const i10IndexMatches = html.match(/i10-index[^0-9]*(\d+)/i);
+        
+        // if (citationMatches || hIndexMatches || i10IndexMatches) {
+        //     const totalCitations = citationMatches ? parseInt(citationMatches[1]) : 0;
+        //     const hIndex = hIndexMatches ? parseInt(hIndexMatches[1]) : 0;
+        //     const i10Index = i10IndexMatches ? parseInt(i10IndexMatches[1]) : 0;
+            
+        //     console.log('通过正则表达式解析成功:', {totalCitations, hIndex, i10Index});
+        //     return { totalCitations, hIndex, i10Index };
+        // }
+        
+        // 方法2c：检查是否是完全没有引用的新用户
+        if (html.includes('gsc_prf_in') && 
+            (html.includes('Citations') || html.includes('引用'))) {
+            console.log('检测到零引用的新用户');
+            return {
+                totalCitations: 0,
+                hIndex: 0,
+                i10Index: 0
+            };
+        }
+        
+        throw new Error('所有备用解析方法都失败');
+        
+    } catch (error) {
+        console.log('备用解析方法失败:', error.message);
+        
+        // 最终兜底：返回零值
+        console.log('使用最终兜底方案：返回零值');
+        return {
+            totalCitations: 0,
+            hIndex: 0,
+            i10Index: 0
+        };
+    }
+}
+
 
 // 递归获取所有论文（真正的完整获取）
 async fetchAllPapersRecursively(baseUrl, userId, domain, startIndex = 0, pageSize = 100) {
@@ -589,9 +721,14 @@ async loadAuthors() {
 
     container.innerHTML = authors.map(author => {
         const showAsNew = author.hasNewCitations && this.isChangeRecent(author.changeTimestamp);
-        const citationChange = author.previousCitations ? 
+        const citationChange = author.previousCitations !== undefined ? 
             author.totalCitations - author.previousCitations : 0;
-        const hasPaperChanges = author.paperChanges && author.paperChanges.length > 0;
+        
+        // 安全地处理可能为undefined的数值
+        const totalCitations = author.totalCitations || 0;
+        const hIndex = author.hIndex || 0;
+        const i10Index = author.i10Index || 0;
+        const totalPapers = author.totalPapers || author.papers?.length || 0;
         
         return `
             <div class="author-item ${showAsNew ? 'has-new' : ''}">
@@ -599,30 +736,32 @@ async loadAuthors() {
                 <div class="author-header">
                     <div class="author-name-link" data-url="${author.url}" title="点击访问 Google Scholar 主页">${author.name}</div>
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        ${hasPaperChanges ? `<button class="paper-changes-btn" data-user-id="${author.userId}">论文变化 (${author.paperChanges.length})</button>` : ''}
+                        ${author.paperChanges && author.paperChanges.length > 0 ? 
+                            `<button class="paper-changes-btn" data-user-id="${author.userId}">论文变化 (${author.paperChanges.length})</button>` : ''}
                         ${showAsNew ? `<button class="mark-read-btn" data-user-id="${author.userId}">已读</button>` : ''}
                         <button class="delete-btn" data-user-id="${author.userId}">×</button>
                     </div>
                 </div>
                 <div class="author-info">
-                    <div><strong>机构:</strong> ${author.affiliation}</div>
-                    <div><strong>研究领域:</strong> ${author.interests}</div>
-                    <div><strong>总论文数:</strong> <span style="color: #1a73e8; font-weight: bold;">${author.totalPapers || author.papers?.length || 0}</span> 篇</div>
+                    <div><strong>机构:</strong> ${author.affiliation || '未知机构'}</div>
+                    <div><strong>研究领域:</strong> ${author.interests || '未知领域'}</div>
+                    <div><strong>总论文数:</strong> <span style="color: #1a73e8; font-weight: bold;">${totalPapers}</span> 篇</div>
                     ${author.workingDomain ? `<div class="working-domain">通过 ${author.workingDomain} 访问</div>` : ''}
                 </div>
                 <div class="citation-info">
                     <div class="citation-item">
                         <div class="citation-label">总引用</div>
-                        <div class="citation-value">${author.totalCitations.toLocaleString()}</div>
+                        <div class="citation-value">${totalCitations.toLocaleString()}</div>
                         ${citationChange > 0 ? `<div class="citation-change">+${citationChange}</div>` : ''}
+                        ${totalCitations === 0 ? '<div class="zero-citation-note">新学者</div>' : ''}
                     </div>
                     <div class="citation-item">
                         <div class="citation-label">H指数</div>
-                        <div class="citation-value">${author.hIndex}</div>
+                        <div class="citation-value">${hIndex}</div>
                     </div>
                     <div class="citation-item">
                         <div class="citation-label">i10指数</div>
-                        <div class="citation-value">${author.i10Index}</div>
+                        <div class="citation-value">${i10Index}</div>
                     </div>
                 </div>
                 <div class="last-updated">

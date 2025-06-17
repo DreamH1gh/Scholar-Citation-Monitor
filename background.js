@@ -770,7 +770,7 @@ class ScholarBackgroundService {
               }
           } else {
               // 备用方案：从所有匹配项中过滤
-              const allMatches = html.match(/‪([^‬]+)‬/g);
+              const allMatches = html.match(/content="[^"]*‪([^‬]+)‬(?:\s*"|\s*>)/);
               if (allMatches) {
                   const filtered = allMatches
                       .map(item => item.replace(/‪|‬/g, ''))
