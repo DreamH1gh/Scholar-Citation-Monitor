@@ -60,7 +60,7 @@ class ScholarBackgroundService {
       // 创建保活alarm
       chrome.alarms.create(this.KEEPALIVE_ALARM, {
           delayInMinutes: 1,
-          periodInMinutes: 5
+          periodInMinutes: 10
       });
   }
 

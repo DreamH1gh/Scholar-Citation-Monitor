@@ -462,6 +462,23 @@ async refreshAll() {
         return;
     }
 
+    // 在刷新前先清理过期的变化数据
+    let hasExpiredChanges = false;
+    authors.forEach(author => {
+        if (author.changeTimestamp && !this.isChangeRecent(author.changeTimestamp)) {
+            console.log(`刷新前清除 ${author.name} 的过期变化数据`);
+            author.hasNewCitations = false;
+            delete author.previousCitations;
+            delete author.changeTimestamp;
+            delete author.paperChanges;
+            hasExpiredChanges = true;
+        }
+    });
+    
+    if (hasExpiredChanges) {
+        await this.saveAuthors(authors);
+    }
+
     const refreshBtn = document.getElementById('refreshBtn');
     const originalText = refreshBtn.textContent;
     refreshBtn.textContent = '刷新中...(更新完整论文列表)';
@@ -719,6 +736,32 @@ async loadAuthors() {
         return;
     }
 
+    // 检查并清除过期的变化数据
+    let hasExpiredChanges = false;
+    authors.forEach(author => {
+        // 如果有变化时间戳但已过期，清除所有变化相关数据
+        if (author.changeTimestamp && !this.isChangeRecent(author.changeTimestamp)) {
+            console.log(`清除 ${author.name} 的过期变化数据`);
+            author.hasNewCitations = false;
+            delete author.previousCitations;
+            delete author.changeTimestamp;
+            delete author.paperChanges; // 关键：删除论文变化数据
+            hasExpiredChanges = true;
+        }
+        // 如果没有变化时间戳但有论文变化数据，也清除（兼容旧数据）
+        else if (!author.changeTimestamp && author.paperChanges) {
+            console.log(`清除 ${author.name} 的无时间戳论文变化数据`);
+            delete author.paperChanges;
+            hasExpiredChanges = true;
+        }
+    });
+    
+    // 如果有过期数据被清除，保存更新后的数据
+    if (hasExpiredChanges) {
+        console.log('保存清理后的作者数据');
+        await this.saveAuthors(authors);
+    }
+
     container.innerHTML = authors.map(author => {
         const showAsNew = author.hasNewCitations && this.isChangeRecent(author.changeTimestamp);
         const citationChange = author.previousCitations !== undefined ? 
@@ -730,13 +773,18 @@ async loadAuthors() {
         const i10Index = author.i10Index || 0;
         const totalPapers = author.totalPapers || author.papers?.length || 0;
         
+        // 检查是否应该显示论文变化按钮（只在变化是最近的时候显示）
+        const shouldShowPaperChanges = author.paperChanges && 
+                                     author.paperChanges.length > 0 && 
+                                     this.isChangeRecent(author.changeTimestamp);
+        
         return `
             <div class="author-item ${showAsNew ? 'has-new' : ''}">
                 ${showAsNew ? '<div class="new-badge">NEW</div>' : ''}
                 <div class="author-header">
                     <div class="author-name-link" data-url="${author.url}" title="点击访问 Google Scholar 主页">${author.name}</div>
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        ${author.paperChanges && author.paperChanges.length > 0 ? 
+                        ${shouldShowPaperChanges ? 
                             `<button class="paper-changes-btn" data-user-id="${author.userId}">论文变化 (${author.paperChanges.length})</button>` : ''}
                         ${showAsNew ? `<button class="mark-read-btn" data-user-id="${author.userId}">已读</button>` : ''}
                         <button class="delete-btn" data-user-id="${author.userId}">×</button>
