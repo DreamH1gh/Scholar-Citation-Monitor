@@ -213,3 +213,7 @@ Special thanks to all the researchers who spend way too much time checking their
 ---
 
 *Made with ❤️ by researchers, for researchers*
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=DreamH1gh/Scholar-Citation-Monitor&type=Date)](https://www.star-history.com/#DreamH1gh/Scholar-Citation-Monitor&Date)
