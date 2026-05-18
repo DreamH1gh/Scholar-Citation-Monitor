@@ -1,4 +1,5 @@
 // background.js - 修复版本，解决重复通知问题（持久化通知去重数据）
+importScripts('i18n.js');
 class ScholarBackgroundService {
 constructor() {
     this.scholarDomains = [
@@ -24,7 +25,8 @@ constructor() {
     this.init();
 }
 
-init() {
+async init() {
+    I18n.currentLang = await I18n.getLanguage();
     this.setupAlarms();
     this.setupEventListeners();
     
@@ -93,7 +95,7 @@ setupEventListeners() {
                 type: 'basic',
                 iconUrl: 'icon48.png',
                 title: 'Scholar Monitor',
-                message: '扩展已安装，将每30分钟自动监控学者引用变化'
+                message: t('notify_installed')
             });
         }
     });
@@ -123,9 +125,15 @@ setupEventListeners() {
 
     // 存储变化监听器
     chrome.storage.onChanged.addListener((changes, namespace) => {
-        if (namespace === 'local' && changes.authors) {
-            console.log('📚 作者列表发生变化，确保定时任务正常');
-            this.ensureAlarmIsActive();
+        if (namespace === 'local') {
+            if (changes.language) {
+                I18n.currentLang = changes.language.newValue || 'zh';
+                console.log(`Language changed to: ${I18n.currentLang}`);
+            }
+            if (changes.authors) {
+                console.log('📚 作者列表发生变化，确保定时任务正常');
+                this.ensureAlarmIsActive();
+            }
         }
     });
 }
@@ -295,8 +303,8 @@ async executeAutoRefresh(enableNotifications = true) {
             await this.showNotification({
                 type: 'basic',
                 iconUrl: 'icon48.png',
-                title: '❌ Scholar Monitor 错误',
-                message: `自动刷新失败: ${error.message.substring(0, 100)}`
+                title: t('notify_error_title'),
+                message: t('notify_refresh_failed', {error: error.message.substring(0, 100)})
             });
         }
     }
@@ -550,35 +558,40 @@ async showChangeNotifications(citationChanges, paperChanges) {
     if (citationChanges.length === 1 && paperChanges.length <= 1) {
         const citationChange = citationChanges[0];
         const authorPaperChanges = paperChanges.find(pc => pc.authorName === citationChange.name);
-        
-        let message = `${citationChange.name} 的总引用从 ${citationChange.oldCitations} 增加到 ${citationChange.newCitations} (+${citationChange.increase})`;
-        
+
+        let message = t('notify_single_change', {
+            name: citationChange.name,
+            old: citationChange.oldCitations,
+            new: citationChange.newCitations,
+            increase: citationChange.increase
+        });
+
         if (authorPaperChanges && authorPaperChanges.changes.length > 0) {
-            message += `\n其中 ${authorPaperChanges.changes.length} 篇论文引用发生变化`;
+            message += '\n' + t('notify_paper_changes_single', {count: authorPaperChanges.changes.length});
         }
-        
+
         await chrome.notifications.create({
             type: 'basic',
             iconUrl: 'icon48.png',
-            title: '🎉 引用数量更新',
+            title: t('notify_citation_update'),
             message: message
         });
     } else {
         let message = '';
-        
+
         if (citationChanges.length > 0) {
-            message += `${citationChanges.length} 位学者总引用增加 ${totalCitationIncrease} 次`;
+            message += t('notify_multi_citations', {count: citationChanges.length, total: totalCitationIncrease});
         }
-        
+
         if (totalPaperChanges > 0) {
             if (message) message += '\n';
-            message += `共 ${totalPaperChanges} 篇论文引用发生变化`;
+            message += t('notify_multi_papers', {count: totalPaperChanges});
         }
-        
+
         await chrome.notifications.create({
             type: 'basic',
             iconUrl: 'icon48.png',
-            title: `🎉 ${Math.max(citationChanges.length, paperChanges.length)} 位学者引用更新`,
+            title: t('notify_multi_title', {count: Math.max(citationChanges.length, paperChanges.length)}),
             message: message
         });
     }

@@ -217,12 +217,13 @@
   }
   .stats-summary {
       background: #f8f9fa;
-      padding: 8px 12px;
+      padding: 6px 10px;
       border-radius: 6px;
-      margin-bottom: 15px;
-      font-size: 12px;
+      font-size: 11px;
       color: #333;
       text-align: center;
+      flex: 1;
+      line-height: 1.4;
   }
   
   /* 论文变化弹窗样式 */
@@ -463,6 +464,26 @@
 .paper-link:hover {
     text-decoration: underline;
 }
+.lang-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.lang-select {
+    padding: 2px 4px;
+    font-size: 11px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+    color: #333;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.lang-select:focus {
+    outline: none;
+    border-color: #4285f4;
+}
 </style>
 </head>
 <body>
@@ -471,8 +492,18 @@
       <div class="last-update" id="lastUpdate">最后更新: 从未更新</div>
   </div>
 
-  <div class="stats-summary" id="statsSummary">
-      暂无统计数据
+  <div class="lang-bar">
+      <select id="langSelect" class="lang-select">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+          <option value="de">Deutsch</option>
+          <option value="fr">Français</option>
+          <option value="ko">한국어</option>
+          <option value="ja">日本語</option>
+          <option value="es">Español</option>
+          <option value="pt">Português</option>
+      </select>
+      <div class="stats-summary" id="statsSummary">暂无统计数据</div>
   </div>
 
   <div class="add-author">
@@ -485,6 +516,7 @@
       <div class="empty-state">正在加载...</div>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

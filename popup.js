@@ -16,11 +16,23 @@ constructor() {
     this.init();
 }
 
-async init() {
+async applyLanguage() {
+    I18n.currentLang = await I18n.getLanguage();
+    const langSelect = document.getElementById('langSelect');
+    if (langSelect) langSelect.value = I18n.currentLang;
+
+    document.getElementById('authorUrl').placeholder = t('input_placeholder');
+    document.getElementById('addBtn').textContent = t('btn_add');
+    document.getElementById('refreshBtn').textContent = t('btn_refresh');
+
     await this.loadAuthors();
-    this.bindEvents();
     this.updateLastUpdateTime();
     this.updateStatsSummary();
+}
+
+async init() {
+    await this.applyLanguage();
+    this.bindEvents();
     this.startStorageListener();
 }
 
@@ -48,6 +60,10 @@ bindEvents() {
     document.getElementById('authorUrl').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') this.addAuthor();
     });
+    document.getElementById('langSelect').addEventListener('change', async (e) => {
+        await I18n.setLanguage(e.target.value);
+        await this.applyLanguage();
+    });
 }
 
 async addAuthor() {
@@ -55,14 +71,14 @@ async addAuthor() {
     if (!url) return;
 
     if (!this.isValidScholarUrl(url)) {
-        alert('请输入有效的Google Scholar作者页面URL');
+        alert(t('alert_invalid_url'));
         return;
     }
 
     try {
         const addBtn = document.getElementById('addBtn');
         const originalText = addBtn.textContent;
-        addBtn.textContent = '添加中...(获取完整论文列表)';
+        addBtn.textContent = t('btn_adding');
         addBtn.disabled = true;
 
         // 获取完整的作者信息，包括所有论文
@@ -79,8 +95,8 @@ async addAuthor() {
         addBtn.textContent = originalText;
         addBtn.disabled = false;
     } catch (error) {
-        alert('获取作者信息失败: ' + error.message);
-        document.getElementById('addBtn').textContent = '添加';
+        alert(t('alert_fetch_failed', {error: error.message}));
+        document.getElementById('addBtn').textContent = t('btn_add');
         document.getElementById('addBtn').disabled = false;
     }
 }
@@ -168,11 +184,11 @@ parseBasicInfo(html) {
 
     // 提取机构信息
     const affiliationElement = doc.querySelector('#gsc_prf_i .gsc_prf_il');
-    const affiliation = affiliationElement ? affiliationElement.textContent.trim() : '未知机构';
+    const affiliation = affiliationElement ? affiliationElement.textContent.trim() : t('unknown_institution');
 
     // 提取研究兴趣
     const interestsElements = doc.querySelectorAll('#gsc_prf_int a.gs_ibl');
-    const interests = Array.from(interestsElements).map(el => el.textContent.trim()).join(', ') || '未知领域';
+    const interests = Array.from(interestsElements).map(el => el.textContent.trim()).join(', ') || t('unknown_fields');
 
     // 尝试提取引用数据 - 增强版，支持零引用情况
     let totalCitations = 0;
@@ -458,7 +474,7 @@ checkHasMorePages(html) {
 async refreshAll() {
     const authors = await this.getStoredAuthors();
     if (authors.length === 0) {
-        alert('没有要刷新的作者');
+        alert(t('alert_no_authors'));
         return;
     }
 
@@ -481,7 +497,7 @@ async refreshAll() {
 
     const refreshBtn = document.getElementById('refreshBtn');
     const originalText = refreshBtn.textContent;
-    refreshBtn.textContent = '刷新中...(更新完整论文列表)';
+    refreshBtn.textContent = t('btn_refreshing');
     refreshBtn.disabled = true;
 
     let successCount = 0;
@@ -542,13 +558,13 @@ async refreshAll() {
     await this.setLastUpdateTime();
 
     if (errorCount > 0) {
-        let message = `刷新完成！成功: ${successCount}, 失败: ${errorCount}`;
-        
+        let message = t('refresh_result', {success: successCount, fail: errorCount});
+
         if (errorCount <= 3) {
             const failedNames = failedAuthors.map(f => f.name).join(', ');
-            message += `\n\n失败的作者: ${failedNames}`;
+            message += '\n\n' + t('refresh_failed_authors', {names: failedNames});
         }
-        
+
         alert(message);
     }
 
@@ -594,7 +610,7 @@ async showPaperChanges(userId) {
     const author = authors.find(a => a.userId === userId);
     
     if (!author || !author.paperChanges || author.paperChanges.length === 0) {
-        alert('该作者暂无论文引用变化记录');
+        alert(t('alert_no_paper_changes'));
         return;
     }
     
@@ -603,7 +619,7 @@ async showPaperChanges(userId) {
     modal.innerHTML = `
         <div class="modal-content">
             <div class="modal-header">
-                <h3>${author.name} - 论文引用变化 (${author.paperChanges.length} 篇)</h3>
+                <h3>${t('paper_changes_title', {name: author.name, count: author.paperChanges.length})}</h3>
                 <button class="close-btn">×</button>
             </div>
             <div class="modal-body">
@@ -616,7 +632,7 @@ async showPaperChanges(userId) {
                                 ${change.oldCitations} → ${change.newCitations} (${change.change > 0 ? '+' : ''}${change.change})
                             </span>
                         </div>
-                        ${change.link ? `<a href="${change.link}" target="_blank" class="paper-link">查看详情</a>` : ''}
+                        ${change.link ? `<a href="${change.link}" target="_blank" class="paper-link">${t('view_details')}</a>` : ''}
                     </div>
                 `).join('')}
             </div>
@@ -718,7 +734,7 @@ async getLastUpdateTime() {
 }
 
 async deleteAuthor(userId) {
-    if (!confirm('确定要删除这个作者吗？')) return;
+    if (!confirm(t('confirm_delete'))) return;
     
     const authors = await this.getStoredAuthors();
     const filteredAuthors = authors.filter(a => a.userId !== userId);
@@ -732,7 +748,7 @@ async loadAuthors() {
     const container = document.getElementById('authorsList');
     
     if (authors.length === 0) {
-        container.innerHTML = '<div class="empty-state">暂无作者数据<br><small>请在上方输入Google Scholar作者页面URL</small></div>';
+        container.innerHTML = `<div class="empty-state">${t('empty_state')}</div>`;
         return;
     }
 
@@ -784,36 +800,36 @@ async loadAuthors() {
                 <div class="author-header">
                     <div class="author-name-link" data-url="${author.url}" title="点击访问 Google Scholar 主页">${author.name}</div>
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        ${shouldShowPaperChanges ? 
-                            `<button class="paper-changes-btn" data-user-id="${author.userId}">论文变化 (${author.paperChanges.length})</button>` : ''}
-                        ${showAsNew ? `<button class="mark-read-btn" data-user-id="${author.userId}">已读</button>` : ''}
+                        ${shouldShowPaperChanges ?
+                            `<button class="paper-changes-btn" data-user-id="${author.userId}">${t('paper_changes_btn', {count: author.paperChanges.length})}</button>` : ''}
+                        ${showAsNew ? `<button class="mark-read-btn" data-user-id="${author.userId}">${t('mark_read')}</button>` : ''}
                         <button class="delete-btn" data-user-id="${author.userId}">×</button>
                     </div>
                 </div>
                 <div class="author-info">
-                    <div><strong>机构:</strong> ${author.affiliation || '未知机构'}</div>
-                    <div><strong>研究领域:</strong> ${author.interests || '未知领域'}</div>
-                    <div><strong>总论文数:</strong> <span style="color: #1a73e8; font-weight: bold;">${totalPapers}</span> 篇</div>
-                    ${author.workingDomain ? `<div class="working-domain">通过 ${author.workingDomain} 访问</div>` : ''}
+                    <div><strong>${t('label_institution')}</strong> ${author.affiliation || t('unknown_institution')}</div>
+                    <div><strong>${t('label_fields')}</strong> ${author.interests || t('unknown_fields')}</div>
+                    <div><strong>${t('label_total_papers')}</strong> <span style="color: #1a73e8; font-weight: bold;">${totalPapers}</span> ${t('paper_counter')}</div>
+                    ${author.workingDomain ? `<div class="working-domain">${t('access_via', {domain: author.workingDomain})}</div>` : ''}
                 </div>
                 <div class="citation-info">
                     <div class="citation-item">
-                        <div class="citation-label">总引用</div>
+                        <div class="citation-label">${t('label_total_citations')}</div>
                         <div class="citation-value">${totalCitations.toLocaleString()}</div>
                         ${citationChange > 0 ? `<div class="citation-change">+${citationChange}</div>` : ''}
-                        ${totalCitations === 0 ? '<div class="zero-citation-note">新学者</div>' : ''}
+                        ${totalCitations === 0 ? `<div class="zero-citation-note">${t('new_scholar')}</div>` : ''}
                     </div>
                     <div class="citation-item">
-                        <div class="citation-label">H指数</div>
+                        <div class="citation-label">${t('label_h_index')}</div>
                         <div class="citation-value">${hIndex}</div>
                     </div>
                     <div class="citation-item">
-                        <div class="citation-label">i10指数</div>
+                        <div class="citation-label">${t('label_i10_index')}</div>
                         <div class="citation-value">${i10Index}</div>
                     </div>
                 </div>
                 <div class="last-updated">
-                    最后更新: ${new Date(author.lastUpdated).toLocaleString('zh-CN')}
+                    ${t('last_updated')}${new Date(author.lastUpdated).toLocaleString(I18n.getLocale())}
                 </div>
             </div>
         `;
@@ -853,10 +869,10 @@ async updateLastUpdateTime() {
     const timeElement = document.getElementById('lastUpdate');
     
     if (lastUpdateTime) {
-        const timeString = new Date(lastUpdateTime).toLocaleString('zh-CN');
-        timeElement.textContent = `最后更新: ${timeString}`;
+        const timeString = new Date(lastUpdateTime).toLocaleString(I18n.getLocale());
+        timeElement.textContent = `${t('last_updated')}${timeString}`;
     } else {
-        timeElement.textContent = '最后更新: 从未';
+        timeElement.textContent = t('last_update_never_short');
     }
 }
 
@@ -875,8 +891,11 @@ async updateStatsSummary() {
         author.hasNewCitations && this.isChangeRecent(author.changeTimestamp)
     ).length;
     
-    const summaryText = `监控 ${totalAuthors} 位学者，共 ${totalPapers.toLocaleString()} 篇论文，总引用 ${totalCitations.toLocaleString()} 次` + 
-        (newChangesCount > 0 ? ` (${newChangesCount} 位有新变化)` : '');
+    const summaryText = t('stats_summary', {
+        totalAuthors,
+        totalPapers: totalPapers.toLocaleString(),
+        totalCitations: totalCitations.toLocaleString()
+    }) + (newChangesCount > 0 ? ' ' + t('stats_new_changes', {count: newChangesCount}) : '');
     
     document.getElementById('statsSummary').textContent = summaryText;
 }
