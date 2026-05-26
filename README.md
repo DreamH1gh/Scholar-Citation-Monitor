@@ -4,6 +4,18 @@
 
 ---
 
+## 🔗 Quick Links / 快速链接
+
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hcmmccenfdomniepffcngceogeaajigc?label=Chrome%20Web%20Store&logo=google-chrome&logoColor=white&color=4285F4)](https://chromewebstore.google.com/detail/scholar-citation-monitor/hcmmccenfdomniepffcngceogeaajigc)
+
+> 🎉 **Now available on the Chrome Web Store!**
+> 👉 [Install Scholar Citation Monitor](https://chromewebstore.google.com/detail/scholar-citation-monitor/hcmmccenfdomniepffcngceogeaajigc)
+
+> 🎉 **现已上架 Chrome 应用商店！**
+> 👉 [立即安装学术引用监控器](https://chromewebstore.google.com/detail/scholar-citation-monitor/hcmmccenfdomniepffcngceogeaajigc)
+
+---
+
 ## English
 
 ### 🎯 What is this?
@@ -22,10 +34,12 @@ Or maybe you're in a friendly (but totally not competitive 😏) citation race w
 ### 🚀 Features
 
 - 📊 **Real-time Citation Tracking**: Monitor multiple authors without opening a single tab
-- 🔄 **Smart Multi-domain Support**: Works with scholar.google.com, .com.hk, .com.sg
+- 🔄 **Smart Multi-domain Support**: Works with scholar.google.com and multiple regional domains worldwide
 - 💾 **Persistent Storage**: Your data stays safe even after browser restarts
 - 🎨 **Clean Interface**: Simple, intuitive popup design
 - ⚡ **Lightweight**: No background tabs, no memory hogging
+- 🔔 **Desktop Notifications**: Get notified instantly when citations increase
+- 🌐 **8 Languages**: Chinese, English, German, French, Korean, Japanese, Spanish, and Portuguese
 
 ### 📁 Project Structure
 
@@ -43,12 +57,21 @@ scholar-citation-monitor/
 
 ### 🛠️ Installation Guide
 
-#### Method 1: Git Clone (Recommended for Easy Updates)
+#### Method 1: Chrome Web Store (Recommended ⭐)
+
+The easiest way to install — no developer mode required!
+
+1. Visit the [Chrome Web Store page](https://chromewebstore.google.com/detail/scholar-citation-monitor/hcmmccenfdomniepffcngceogeaajigc)
+2. Click **"Add to Chrome"**
+3. **Pin the extension** to your toolbar for easy access
+4. Done! 🎉
+
+#### Method 2: Git Clone (For Developers / Easy Updates)
 
 1. **Clone the repository** using Git:
- ```bash
- git clone https://github.com/DreamH1gh/Scholar-Citation-Monitor.git
- ```
+  ```bash
+  git clone https://github.com/DreamH1gh/Scholar-Citation-Monitor.git
+  ```
 
 2. **Open Chrome** and navigate to `chrome://extensions/`
 
@@ -64,7 +87,7 @@ git pull origin main
 ```
 Then reload the extension in Chrome (click the refresh button in `chrome://extensions/`)
 
-#### Method 2: Download ZIP (Manual Updates)
+#### Method 3: Download ZIP (Manual Updates)
 
 1. **Download** the latest release as ZIP from GitHub
 2. **Extract** the ZIP file to your desired location
@@ -72,10 +95,6 @@ Then reload the extension in Chrome (click the refresh button in `chrome://exten
 4. **Enable Developer Mode** (toggle in the top-right corner)
 5. **Click "Load unpacked"** and select the extracted folder
 6. **Pin the extension** to your toolbar for easy access
-
-#### Method 3: Chrome Web Store (Coming Soon™)
-
-*We're working on getting this published to the Chrome Web Store. Stay tuned!*
 
 ### 🎮 How to Use
 
@@ -121,10 +140,12 @@ Feel free to open an issue or submit a pull request. We welcome all contribution
 ### 🚀 功能特色
 
 - 📊 **实时引用追踪**：监控多个作者，无需打开任何标签页
-- 🔄 **智能多域名支持**：支持scholar.google.com、.com.hk、.com.sg
+- 🔄 **智能多域名支持**：支持全球多个 Google Scholar 区域域名
 - 💾 **持久化存储**：即使重启浏览器，数据也不会丢失
 - 🎨 **简洁界面**：简单直观的弹窗设计
 - ⚡ **轻量级**：无后台标签页，不占用内存
+- 🔔 **桌面通知**：引用数增加时立即推送通知
+- 🌐 **8种语言**：中文、英文、德文、法文、韩文、日文、西班牙文、葡萄牙文
 
 ### 📁 项目结构
 
@@ -142,12 +163,21 @@ scholar-citation-monitor/
 
 ### 🛠️ 安装教程
 
-#### 方法一：Git克隆（推荐，便于更新）
+#### 方法一：Chrome 应用商店（推荐 ⭐）
+
+最简单的安装方式，无需开启开发者模式！
+
+1. 访问 [Chrome 应用商店页面](https://chromewebstore.google.com/detail/scholar-citation-monitor/hcmmccenfdomniepffcngceogeaajigc)
+2. 点击 **"添加至 Chrome"**
+3. **将扩展固定**到工具栏以便使用
+4. 完成！🎉
+
+#### 方法二：Git克隆（适合开发者 / 便于更新）
 
 1. **使用Git克隆仓库**：
- ```bash
- git clone https://github.com/DreamH1gh/Scholar-Citation-Monitor.git
- ```
+  ```bash
+  git clone https://github.com/DreamH1gh/Scholar-Citation-Monitor.git
+  ```
 
 2. **打开Chrome**，导航到 `chrome://extensions/`
 
@@ -163,7 +193,7 @@ git pull origin main
 ```
 然后在Chrome中重新加载扩展（在 `chrome://extensions/` 中点击刷新按钮）
 
-#### 方法二：下载ZIP（手动更新）
+#### 方法三：下载ZIP（手动更新）
 
 1. **从GitHub下载**最新版本的ZIP文件
 2. **解压**ZIP文件到你想要的位置
@@ -171,10 +201,6 @@ git pull origin main
 4. **启用开发者模式**（右上角的开关）
 5. **点击"加载已解压的扩展程序"**，选择解压后的文件夹
 6. **将扩展固定**到工具栏以便使用
-
-#### 方法三：Chrome应用商店（即将推出™）
-
-*我们正在努力将此扩展发布到Chrome应用商店，敬请期待！*
 
 ### 🎮 使用方法
 
