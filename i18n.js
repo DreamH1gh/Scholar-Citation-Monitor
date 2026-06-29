@@ -78,7 +78,16 @@ const I18n = {
             notify_paper_changes_single: '其中 {count} 篇论文引用发生变化',
             notify_multi_citations: '{count} 位学者总引用增加 {total} 次',
             notify_multi_papers: '共 {count} 篇论文引用发生变化',
-            notify_multi_title: '🎉 {count} 位学者引用更新'
+            notify_multi_title: '🎉 {count} 位学者引用更新',
+
+            // Citation history
+            history_title: '📈 引用历史',
+            history_empty: '暂无历史数据，刷新后开始记录',
+
+            // Settings panel
+            label_settings: '设置',
+            label_language: '语言',
+            label_show_history: '显示引用历史'
         },
 
         // ========== English (en) ==========
@@ -135,7 +144,16 @@ const I18n = {
             notify_paper_changes_single: '{count} papers with citation changes',
             notify_multi_citations: '{count} scholars with {total} total citation increases',
             notify_multi_papers: '{count} papers with citation changes in total',
-            notify_multi_title: '🎉 {count} Scholars Updated'
+            notify_multi_title: '🎉 {count} Scholars Updated',
+
+            // Citation history
+            history_title: '📈 Citation History',
+            history_empty: 'No history yet — will start recording after refresh',
+
+            // Settings panel
+            label_settings: 'Settings',
+            label_language: 'Language',
+            label_show_history: 'Show citation history'
         },
 
         // ========== German (de) ==========
@@ -192,7 +210,16 @@ const I18n = {
             notify_paper_changes_single: '{count} Arbeiten mit Zitationsänderungen',
             notify_multi_citations: '{count} Forscher mit {total} neuen Zitationen',
             notify_multi_papers: '{count} Arbeiten mit Zitationsänderungen',
-            notify_multi_title: '🎉 {count} Forscher aktualisiert'
+            notify_multi_title: '🎉 {count} Forscher aktualisiert',
+
+            // Citation history
+            history_title: '📈 Zitationsverlauf',
+            history_empty: 'Noch keine Verlaufsdaten — Aufzeichnung nach Aktualisierung',
+
+            // Settings panel
+            label_settings: 'Einstellungen',
+            label_language: 'Sprache',
+            label_show_history: 'Zitationsverlauf anzeigen'
         },
 
         // ========== French (fr) ==========
@@ -249,7 +276,16 @@ const I18n = {
             notify_paper_changes_single: '{count} publications avec des changements de citations',
             notify_multi_citations: '{count} chercheurs avec {total} nouvelles citations',
             notify_multi_papers: '{count} publications avec des changements de citations',
-            notify_multi_title: '🎉 {count} chercheurs mis à jour'
+            notify_multi_title: '🎉 {count} chercheurs mis à jour',
+
+            // Citation history
+            history_title: '📈 Historique des citations',
+            history_empty: 'Pas encore d\'historique — enregistré après actualisation',
+
+            // Settings panel
+            label_settings: 'Paramètres',
+            label_language: 'Langue',
+            label_show_history: 'Afficher l\'historique des citations'
         },
 
         // ========== Korean (ko) ==========
@@ -306,7 +342,16 @@ const I18n = {
             notify_paper_changes_single: '{count}편 논문 인용 변화',
             notify_multi_citations: '{count}명 학자 총 인용 {total}회 증가',
             notify_multi_papers: '총 {count}편 논문 인용 변화',
-            notify_multi_title: '🎉 {count}명 학자 업데이트'
+            notify_multi_title: '🎉 {count}명 학자 업데이트',
+
+            // Citation history
+            history_title: '📈 인용 이력',
+            history_empty: '아직 이력 없음 — 새로고침 후 기록 시작',
+
+            // Settings panel
+            label_settings: '설정',
+            label_language: '언어',
+            label_show_history: '인용 이력 표시'
         },
 
         // ========== Japanese (ja) ==========
@@ -363,7 +408,16 @@ const I18n = {
             notify_paper_changes_single: '{count}件の論文に被引用変化',
             notify_multi_citations: '{count}名の研究者が合計{total}回被引用増加',
             notify_multi_papers: '合計{count}件の論文に被引用変化',
-            notify_multi_title: '🎉 {count}名の研究者がアップデート'
+            notify_multi_title: '🎉 {count}名の研究者がアップデート',
+
+            // Citation history
+            history_title: '📈 引用履歴',
+            history_empty: 'まだ履歴なし — 更新後に記録を開始',
+
+            // Settings panel
+            label_settings: '設定',
+            label_language: '言語',
+            label_show_history: '引用履歴を表示'
         },
 
         // ========== Spanish (es) ==========
@@ -420,7 +474,16 @@ const I18n = {
             notify_paper_changes_single: '{count} publicaciones con cambios de citas',
             notify_multi_citations: '{count} investigadores con {total} citas nuevas',
             notify_multi_papers: '{count} publicaciones con cambios de citas en total',
-            notify_multi_title: '🎉 {count} investigadores actualizados'
+            notify_multi_title: '🎉 {count} investigadores actualizados',
+
+            // Citation history
+            history_title: '📈 Historial de citas',
+            history_empty: 'Aún sin historial — se registrará tras actualizar',
+
+            // Settings panel
+            label_settings: 'Ajustes',
+            label_language: 'Idioma',
+            label_show_history: 'Mostrar historial de citas'
         },
 
         // ========== Portuguese (pt) ==========
@@ -477,7 +540,16 @@ const I18n = {
             notify_paper_changes_single: '{count} publicações com alterações de citações',
             notify_multi_citations: '{count} pesquisadores com {total} novas citações',
             notify_multi_papers: '{count} publicações com alterações de citações no total',
-            notify_multi_title: '🎉 {count} pesquisadores atualizados'
+            notify_multi_title: '🎉 {count} pesquisadores atualizados',
+
+            // Citation history
+            history_title: '📈 Histórico de citações',
+            history_empty: 'Ainda sem histórico — registrado após atualização',
+
+            // Settings panel
+            label_settings: 'Configurações',
+            label_language: 'Idioma',
+            label_show_history: 'Mostrar histórico de citações'
         }
     },
 
@@ -490,14 +562,27 @@ const I18n = {
         return text;
     },
 
+    detectBrowserLanguage() {
+        try {
+            const uiLang = (typeof chrome !== 'undefined' && chrome.i18n && chrome.i18n.getUILanguage)
+                ? chrome.i18n.getUILanguage()
+                : (navigator.language || 'zh');
+            const short = uiLang.split('-')[0].toLowerCase();
+            const supported = ['zh', 'en', 'de', 'fr', 'ko', 'ja', 'es', 'pt'];
+            return supported.includes(short) ? short : 'zh';
+        } catch (e) {
+            return 'zh';
+        }
+    },
+
     async getLanguage() {
         return new Promise(resolve => {
             try {
                 chrome.storage.local.get(['language'], (result) => {
-                    resolve(result.language || 'zh');
+                    resolve(result.language || this.detectBrowserLanguage());
                 });
             } catch (e) {
-                resolve('zh');
+                resolve(this.detectBrowserLanguage());
             }
         });
     },

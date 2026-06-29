@@ -29,7 +29,8 @@ async init() {
     I18n.currentLang = await I18n.getLanguage();
     this.setupAlarms();
     this.setupEventListeners();
-    
+    await this.dedupeHistoryOnce();
+
     // 启动后立即执行一次检查
     setTimeout(() => {
         this.performStartupCheck();
@@ -71,17 +72,23 @@ setupAlarms() {
 
 setupEventListeners() {
     // 最重要：Alarm监听器
-    chrome.alarms.onAlarm.addListener((alarm) => {
+    chrome.alarms.onAlarm.addListener(async (alarm) => {
         console.log(`🔔 Alarm触发: ${alarm.name} at ${new Date().toISOString()}`);
-        
+
         if (alarm.name === this.ALARM_NAME) {
             console.log('📚 开始执行定时刷新任务');
-            this.executeAutoRefresh().catch(error => {
+            try {
+                await this.executeAutoRefresh();
+            } catch (error) {
                 console.error('❌ 定时刷新失败:', error);
-            });
+            }
         } else if (alarm.name === this.KEEPALIVE_ALARM) {
             console.log('💓 保活检查');
-            this.performHealthCheck();
+            try {
+                await this.performHealthCheck();
+            } catch (error) {
+                console.error('❌ 健康检查失败:', error);
+            }
         }
     });
 
@@ -227,7 +234,7 @@ async performHealthCheck() {
             // 如果超过40分钟没有更新且有作者需要监控，触发一次刷新
             if (timeSinceUpdate > 40 && authors.length > 0) {
                 console.log('🚨 长时间未更新，触发紧急刷新');
-                this.executeAutoRefresh();
+                await this.executeAutoRefresh();
             }
         }
         
@@ -427,10 +434,15 @@ async autoRefreshAll() {
                     ...updatedInfo,
                     lastUpdated: new Date().toISOString()
                 };
-                
+
+                this.appendHistorySnapshot(authors[i], authors[i].totalCitations, authors[i].hIndex, authors[i].i10Index);
+
                 successCount++;
                 console.log(`✅ ${author.name} 刷新成功`);
-                
+
+                // 每位作者处理完立即落盘，避免 SW 中断丢失 history
+                await this.saveAuthors(authors);
+
             } catch (error) {
                 console.error(`❌ 自动刷新 ${author.name} 失败:`, error.message);
                 errorCount++;
@@ -438,9 +450,11 @@ async autoRefreshAll() {
                     name: author.name,
                     error: error.message
                 });
-                
+
                 authors[i].lastUpdated = new Date().toISOString();
                 authors[i].lastError = error.message;
+
+                await this.saveAuthors(authors);
             }
         }
 
@@ -683,9 +697,85 @@ async setLastUpdateTime() {
     });
 }
 
+// === Citation history ===
+appendHistorySnapshot(author, citations, hIndex, i10Index) {
+    if (!author.history) author.history = [];
+    const now = new Date();
+    const last = author.history[author.history.length - 1];
+    const lastDate = last ? new Date(last.timestamp) : null;
+
+    const isSameDay = lastDate &&
+        lastDate.getFullYear() === now.getFullYear() &&
+        lastDate.getMonth() === now.getMonth() &&
+        lastDate.getDate() === now.getDate();
+
+    // 同一天：覆盖该条记录，保证 sparkline 每天最多一个点
+    if (isSameDay) {
+        last.citations = citations;
+        last.hIndex = hIndex;
+        last.i10Index = i10Index;
+        last.timestamp = now.toISOString();
+        return;
+    }
+    author.history.push({
+        timestamp: now.toISOString(),
+        citations, hIndex, i10Index
+    });
+}
+
+// 一次性数据修复：同一天只保留最后一条，用 flag 保证只执行一次
+async dedupeHistoryOnce() {
+    const FLAG = 'historyDedupe_v1';
+    return new Promise((resolve) => {
+        chrome.storage.local.get([FLAG], async (result) => {
+            if (result[FLAG]) { resolve(); return; }
+            const authors = await this.getStoredAuthors();
+            let changed = false;
+            for (const author of authors) {
+                const before = (author.history || []).length;
+                this.dedupeHistory(author);
+                if ((author.history || []).length !== before) changed = true;
+            }
+            if (changed) {
+                await this.saveAuthors(authors);
+                console.log('🧹 历史去重完成');
+            }
+            chrome.storage.local.set({[FLAG]: true}, resolve);
+        });
+    });
+}
+
+dedupeHistory(author) {
+    if (!author.history || author.history.length <= 1) return;
+    const byDay = new Map();
+    for (const snap of author.history) {
+        const d = new Date(snap.timestamp);
+        const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+        const existing = byDay.get(key);
+        if (!existing || new Date(snap.timestamp) > new Date(existing.timestamp)) {
+            byDay.set(key, snap);
+        }
+    }
+    author.history = Array.from(byDay.values())
+        .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+}
+
 async saveAuthors(authors) {
     return new Promise((resolve) => {
-        chrome.storage.local.set({authors}, resolve);
+        chrome.storage.local.set({authors}, () => {
+            if (chrome.runtime.lastError) {
+                // 配额超限：激进裁剪所有作者的 history，重试一次
+                console.warn('Storage quota exceeded, trimming history:', chrome.runtime.lastError.message);
+                authors.forEach(a => {
+                    if (a.history && a.history.length > 365) {
+                        a.history = a.history.slice(-365);
+                    }
+                });
+                chrome.storage.local.set({authors}, resolve);
+            } else {
+                resolve();
+            }
+        });
     });
 }
 
@@ -1085,12 +1175,16 @@ extractPapersFromHtmlWithRegex(html, startIndex = 0) {
                 let title = '';
                 let link = '';
 
-                // 策略1: 标准论文标题匹配
-                titleMatch = rowHtml.match(/<a[^>]*class=\"gsc_a_at\"[^>]*(?:href=\"([^\"]*)\")?[^>]*>([^<]+)<\/a>/);
-                
+                // 策略1: 标准论文标题匹配（只匹配标签和标题文本，不耦合 href）
+                titleMatch = rowHtml.match(/<a[^>]*class=\"gsc_a_at\"[^>]*>([^<]+)<\/a>/);
+
                 if (titleMatch) {
-                    title = titleMatch[2].trim();
-                    link = titleMatch[1] ? `https://scholar.google.com${titleMatch[1]}` : '';
+                    title = titleMatch[1].trim();
+                    // 单独提取 href，兼容 href 在 class 之前或之后两种属性顺序
+                    // （Google Scholar 实际 HTML 是 href 在前，旧正则会漏抓）
+                    const hrefMatch = rowHtml.match(/<a[^>]*href=\"([^\"]*)\"[^>]*class=\"gsc_a_at\"/) ||
+                                     rowHtml.match(/<a[^>]*class=\"gsc_a_at\"[^>]*href=\"([^\"]*)\"/);
+                    link = hrefMatch ? `https://scholar.google.com${hrefMatch[1]}` : '';
                 } else {
                     // 策略2: 处理无链接的标题（如某些引用条目）
                     const noLinkTitleMatch = rowHtml.match(/<span[^>]*class=\"gsc_a_at\"[^>]*>([^<]+)<\/span>/);

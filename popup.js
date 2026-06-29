@@ -25,12 +25,22 @@ async applyLanguage() {
     document.getElementById('addBtn').textContent = t('btn_add');
     document.getElementById('refreshBtn').textContent = t('btn_refresh');
 
+    const labelLanguageText = document.getElementById('labelLanguageText');
+    if (labelLanguageText) labelLanguageText.textContent = t('label_language');
+    const labelShowHistoryText = document.getElementById('labelShowHistoryText');
+    if (labelShowHistoryText) labelShowHistoryText.textContent = t('label_show_history');
+    const settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn) settingsBtn.title = t('label_settings');
+    const showHistoryToggle = document.getElementById('showHistoryToggle');
+    if (showHistoryToggle) showHistoryToggle.checked = this.showHistory;
+
     await this.loadAuthors();
     this.updateLastUpdateTime();
     this.updateStatsSummary();
 }
 
 async init() {
+    this.showHistory = await this.getShowHistory();
     await this.applyLanguage();
     this.bindEvents();
     this.startStorageListener();
@@ -63,6 +73,27 @@ bindEvents() {
     document.getElementById('langSelect').addEventListener('change', async (e) => {
         await I18n.setLanguage(e.target.value);
         await this.applyLanguage();
+    });
+
+    const settingsBtn = document.getElementById('settingsBtn');
+    const settingsPanel = document.getElementById('settingsPanel');
+    settingsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = settingsPanel.classList.toggle('open');
+        settingsBtn.classList.toggle('active', isOpen);
+    });
+    document.getElementById('showHistoryToggle').addEventListener('change', async (e) => {
+        this.showHistory = e.target.checked;
+        await this.setShowHistory(this.showHistory);
+        await this.loadAuthors();
+    });
+    document.addEventListener('click', (e) => {
+        if (settingsPanel.classList.contains('open') &&
+            !settingsPanel.contains(e.target) &&
+            e.target !== settingsBtn) {
+            settingsPanel.classList.remove('open');
+            settingsBtn.classList.remove('active');
+        }
     });
 }
 
@@ -537,6 +568,7 @@ async refreshAll() {
             }
             
             authors[i] = {...authors[i], ...updatedInfo};
+            this.appendHistorySnapshot(authors[i], authors[i].totalCitations, authors[i].hIndex, authors[i].i10Index);
             successCount++;
             
             await this.saveAuthors(authors);
@@ -641,15 +673,18 @@ async showPaperChanges(userId) {
     
     const closeBtn = modal.querySelector('.close-btn');
     closeBtn.addEventListener('click', () => {
+        document.body.style.minHeight = '';
         modal.remove();
     });
-    
+
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
+            document.body.style.minHeight = '';
             modal.remove();
         }
     });
-    
+
+    document.body.style.minHeight = '600px';
     document.body.appendChild(modal);
 }
 
@@ -681,32 +716,170 @@ openAuthorPage(url) {
 
 async saveAuthor(authorInfo) {
     const authors = await this.getStoredAuthors();
-    
+
     const existingIndex = authors.findIndex(a => a.userId === authorInfo.userId);
-    
+
     if (existingIndex >= 0) {
+        // 保留旧的 history / 展开状态 / 区间选择，避免被整体覆盖
+        authorInfo.history = authors[existingIndex].history || [];
+        authorInfo.historyExpanded = authors[existingIndex].historyExpanded;
+        authorInfo.historyRange = authors[existingIndex].historyRange;
+
         // 如果作者已存在，检查引用变化
         if (authorInfo.totalCitations !== authors[existingIndex].totalCitations) {
             authorInfo.hasNewCitations = true;
             authorInfo.previousCitations = authors[existingIndex].totalCitations;
             authorInfo.changeTimestamp = new Date().toISOString();
-            
+
             // 比较论文变化
             if (authors[existingIndex].papers && authors[existingIndex].papers.length > 0) {
                 authorInfo.paperChanges = this.comparePapers(authors[existingIndex].papers, authorInfo.papers);
             }
         }
+        this.appendHistorySnapshot(authorInfo, authorInfo.totalCitations, authorInfo.hIndex, authorInfo.i10Index);
         authors[existingIndex] = authorInfo;
     } else {
+        this.appendHistorySnapshot(authorInfo, authorInfo.totalCitations, authorInfo.hIndex, authorInfo.i10Index);
         authors.push(authorInfo);
     }
-    
+
     await this.saveAuthors(authors);
+}
+
+// === Citation history ===
+appendHistorySnapshot(author, citations, hIndex, i10Index) {
+    if (!author.history) author.history = [];
+    const now = new Date();
+    const last = author.history[author.history.length - 1];
+    const lastDate = last ? new Date(last.timestamp) : null;
+
+    const isSameDay = lastDate &&
+        lastDate.getFullYear() === now.getFullYear() &&
+        lastDate.getMonth() === now.getMonth() &&
+        lastDate.getDate() === now.getDate();
+
+    // 同一天：覆盖该条记录，保证 sparkline 每天最多一个点
+    if (isSameDay) {
+        last.citations = citations;
+        last.hIndex = hIndex;
+        last.i10Index = i10Index;
+        last.timestamp = now.toISOString();
+        return;
+    }
+    author.history.push({
+        timestamp: now.toISOString(),
+        citations, hIndex, i10Index
+    });
+}
+
+renderSparkline(history, range = 30) {
+    if (!history || history.length === 0) {
+        return `<div class="history-empty">${t('history_empty')}</div>`;
+    }
+    const points = range === 'all' ? history.slice() : history.slice(-range);
+    if (points.length === 1) {
+        return `<div class="history-single">📊 ${points[0].citations}</div>`;
+    }
+    const cs = points.map(p => p.citations);
+    const minC = Math.min(...cs);
+    const maxC = Math.max(...cs);
+    const cRange = maxC - minC || 1;
+
+    // 时间等比 X 轴：按 timestamp 真实间距映射
+    const times = points.map(p => new Date(p.timestamp).getTime());
+    const minT = Math.min(...times);
+    const maxT = Math.max(...times);
+    const tRange = maxT - minT || 1;
+
+    const W = 320, H = 50;
+    const LEFT = 4, RIGHT = 4, TOP = 6, BOTTOM = 6;
+    const plotW = W - LEFT - RIGHT;
+    const plotH = H - TOP - BOTTOM;
+
+    const xy = points.map(p => {
+        const ts = new Date(p.timestamp).getTime();
+        const x = LEFT + ((ts - minT) / tRange) * plotW;
+        const y = TOP + plotH - ((p.citations - minC) / cRange) * plotH;
+        return { x, y, citations: p.citations, timestamp: p.timestamp };
+    });
+
+    const smoothPath = this.generateSmoothPath(xy);
+    const fmtAxis = v => v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v;
+
+    const dots = xy.map(p => `
+        <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.2" fill="#1a73e8" pointer-events="none"/>
+        <circle class="sparkline-hover-target"
+                cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="10"
+                fill="transparent"
+                data-citations="${p.citations}"
+                data-timestamp="${p.timestamp}"/>
+    `).join('');
+
+    return `
+        <div class="sparkline-wrap">
+            <span class="sparkline-axis-max">${fmtAxis(maxC)}</span>
+            <span class="sparkline-axis-min">${fmtAxis(minC)}</span>
+            <svg class="sparkline" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+                <path d="${smoothPath}" fill="none" stroke="#1a73e8" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+                ${dots}
+            </svg>
+        </div>`;
+}
+
+// Catmull-Rom 样条 → cubic Bezier 路径，生成平滑曲线
+generateSmoothPath(pts) {
+    if (pts.length < 2) return '';
+    if (pts.length === 2) {
+        return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
+    }
+    let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[i - 1] || pts[i];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = pts[i + 2] || p2;
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+        d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+    }
+    return d;
+}
+
+async toggleHistory(userId) {
+    const authors = await this.getStoredAuthors();
+    const author = authors.find(a => a.userId === userId);
+    if (!author) return;
+    author.historyExpanded = !author.historyExpanded;
+    await this.saveAuthors(authors);
+    await this.loadAuthors();
+}
+
+async setHistoryRange(userId, range) {
+    const authors = await this.getStoredAuthors();
+    const author = authors.find(a => a.userId === userId);
+    if (!author) return;
+    author.historyRange = range;
+    await this.saveAuthors(authors);
+    await this.loadAuthors();
 }
 
 async saveAuthors(authors) {
     return new Promise((resolve) => {
-        chrome.storage.local.set({authors}, resolve);
+        chrome.storage.local.set({authors}, () => {
+            if (chrome.runtime.lastError) {
+                console.warn('Storage quota exceeded, trimming history:', chrome.runtime.lastError.message);
+                authors.forEach(a => {
+                    if (a.history && a.history.length > 365) {
+                        a.history = a.history.slice(-365);
+                    }
+                });
+                chrome.storage.local.set({authors}, resolve);
+            } else {
+                resolve();
+            }
+        });
     });
 }
 
@@ -715,6 +888,20 @@ async getStoredAuthors() {
         chrome.storage.local.get(['authors'], (result) => {
             resolve(result.authors || []);
         });
+    });
+}
+
+async getShowHistory() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['showHistory'], (result) => {
+            resolve(result.showHistory !== false);
+        });
+    });
+}
+
+async setShowHistory(value) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set({showHistory: value}, resolve);
     });
 }
 
@@ -828,6 +1015,27 @@ async loadAuthors() {
                         <div class="citation-value">${i10Index}</div>
                     </div>
                 </div>
+                ${this.showHistory ? `
+                <div class="history-section">
+                    <div class="history-header" data-user-id="${author.userId}">
+                        <span>${t('history_title')}</span>
+                        <span class="history-arrow">${author.historyExpanded ? '▼' : '▶'}</span>
+                    </div>
+                    ${author.historyExpanded ? `
+                        <div class="history-content">
+                            <div class="history-range">
+                                ${[7, 30, 90, 365, 'all'].map(r => `
+                                    <button class="range-btn ${(author.historyRange || 30) === r ? 'active' : ''}"
+                                            data-user-id="${author.userId}" data-range="${r}">
+                                        ${r === 365 ? '1Y' : r === 'all' ? 'All' : r + 'D'}
+                                    </button>
+                                `).join('')}
+                            </div>
+                            ${this.renderSparkline(author.history, author.historyRange || 30)}
+                        </div>
+                    ` : ''}
+                </div>
+                ` : ''}
                 <div class="last-updated">
                     ${t('last_updated')}${new Date(author.lastUpdated).toLocaleString(I18n.getLocale())}
                 </div>
@@ -856,10 +1064,51 @@ async loadAuthors() {
         });
     });
 
+    container.querySelectorAll('.history-header').forEach(header => {
+        header.addEventListener('click', (e) => {
+            const userId = e.currentTarget.getAttribute('data-user-id');
+            this.toggleHistory(userId);
+        });
+    });
+
+    container.querySelectorAll('.range-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const userId = e.currentTarget.getAttribute('data-user-id');
+            const raw = e.currentTarget.getAttribute('data-range');
+            const range = raw === 'all' ? 'all' : parseInt(raw);
+            this.setHistoryRange(userId, range);
+        });
+    });
+
     container.querySelectorAll('.paper-changes-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const userId = e.target.getAttribute('data-user-id');
             this.showPaperChanges(userId);
+        });
+    });
+
+    const tooltip = document.getElementById('sparklineTooltip');
+    container.querySelectorAll('.sparkline-hover-target').forEach(circle => {
+        circle.addEventListener('mouseenter', (e) => {
+            const target = e.currentTarget;
+            const citations = target.getAttribute('data-citations');
+            const timestamp = target.getAttribute('data-timestamp');
+            const dateStr = new Date(timestamp).toLocaleDateString(I18n.getLocale(), {
+                year: 'numeric', month: 'short', day: 'numeric'
+            });
+            tooltip.innerHTML = `<div><strong>${parseInt(citations).toLocaleString()}</strong></div><div>${dateStr}</div>`;
+            tooltip.style.display = 'block';
+            const rect = target.getBoundingClientRect();
+            const tipRect = tooltip.getBoundingClientRect();
+            const margin = 4;
+            let leftPos = rect.left + rect.width / 2 - tipRect.width / 2;
+            leftPos = Math.max(margin, Math.min(leftPos, window.innerWidth - tipRect.width - margin));
+            tooltip.style.left = leftPos + 'px';
+            tooltip.style.top = (rect.top - tipRect.height - 6) + 'px';
+        });
+        circle.addEventListener('mouseleave', () => {
+            tooltip.style.display = 'none';
         });
     });
 }
