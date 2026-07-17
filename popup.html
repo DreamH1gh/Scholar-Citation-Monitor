@@ -245,7 +245,7 @@
     top: 0;
     left: 0;
     width: 100%;
-    height: 100%;
+    height: 100vh;
     background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
@@ -258,7 +258,7 @@
     border-radius: 8px;
     width: 95%;
     max-width: 380px;
-    max-height: min(90%, 550px);
+    max-height: 90vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -572,6 +572,183 @@
 .toggle input:checked + .toggle-slider:before {
     transform: translateX(16px);
 }
+
+/* 新增引用明细：作者卡片内联开关 */
+.citation-details-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #f0f0f0;
+}
+.cd-label {
+    font-size: 12px;
+    color: #555;
+}
+.toggle-mini {
+    width: 28px;
+    height: 16px;
+}
+.toggle-mini .toggle-slider:before {
+    height: 12px;
+    width: 12px;
+}
+.toggle-mini input:checked + .toggle-slider:before {
+    transform: translateX(12px);
+}
+
+/* 论文变化弹窗内的新引用者区块 */
+.new-citers-block {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed #e0e0e0;
+}
+.new-citers-empty {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed #e0e0e0;
+    font-size: 12px;
+    color: #888;
+    font-style: italic;
+    line-height: 1.5;
+}
+.new-citers-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    font-size: 12px;
+    color: #9c27b0;
+    font-weight: 500;
+    user-select: none;
+}
+.new-citers-header:hover {
+    color: #7b1fa2;
+}
+.new-citers-header .arrow {
+    font-size: 10px;
+    transition: transform 0.2s;
+}
+.new-citers-header.expanded .arrow {
+    transform: rotate(90deg);
+}
+.new-citers-list {
+    margin-top: 8px;
+    padding-left: 8px;
+    border-left: 2px solid #e1bee7;
+}
+.citer-item {
+    margin-bottom: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.citer-title {
+    color: #1976d2;
+    text-decoration: none;
+    font-weight: 500;
+}
+.citer-title:hover {
+    text-decoration: underline;
+}
+.citer-meta {
+    color: #666;
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+/* 反爬告警 banner */
+.anticrawl-banner {
+    background: #fff8e1;
+    border: 1px solid #ffb300;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    position: relative;
+    box-shadow: 0 1px 4px rgba(255, 179, 0, 0.15);
+}
+.anticrawl-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e65100;
+    margin-bottom: 4px;
+    padding-right: 24px;
+}
+.anticrawl-body {
+    font-size: 12px;
+    color: #424242;
+    line-height: 1.5;
+    margin-bottom: 8px;
+}
+.anticrawl-paper {
+    font-size: 11px;
+    color: #666;
+    background: #fff;
+    padding: 4px 6px;
+    border-radius: 4px;
+    margin-bottom: 8px;
+    border-left: 3px solid #ffb300;
+    line-height: 1.4;
+    /* 论文 title 可能很长，限制行数 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.anticrawl-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.anticrawl-open-btn {
+    background: #ff9800;
+    color: white;
+    font-size: 12px;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+.anticrawl-open-btn:hover {
+    background: #f57c00;
+}
+.anticrawl-verified-btn {
+    background: #34a853;
+    color: white;
+    font-size: 12px;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+.anticrawl-verified-btn:hover {
+    background: #2d8f47;
+}
+.anticrawl-dismiss-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 18px;
+    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    line-height: 1;
+    padding: 0;
+}
+.anticrawl-dismiss-btn:hover {
+    background: rgba(0, 0, 0, 0.08);
+    color: #424242;
+}
 </style>
 </head>
 <body>
@@ -603,9 +780,18 @@
                   <span class="toggle-slider"></span>
               </label>
           </div>
+          <div class="settings-row">
+              <span id="labelCitationDetailsText"></span>
+              <label class="toggle">
+                  <input type="checkbox" id="citationDetailsToggle">
+                  <span class="toggle-slider"></span>
+              </label>
+          </div>
       </div>
       <div class="stats-summary" id="statsSummary">暂无统计数据</div>
   </div>
+
+  <div id="antiCrawlBanner" class="anticrawl-banner" style="display:none;"></div>
 
   <div class="add-author">
       <input type="text" id="authorUrl" placeholder="输入 Google Scholar 作者页面 URL">

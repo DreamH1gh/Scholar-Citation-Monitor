@@ -13,6 +13,8 @@ constructor() {
         'scholar.google.ca',
         'scholar.google.cn'
     ];
+    // 公告版本号：有新内容时 bump，所有用户会再看一次
+    this.UPDATE_ANNOUNCEMENT_VERSION = 1;
     this.init();
 }
 
@@ -29,21 +31,123 @@ async applyLanguage() {
     if (labelLanguageText) labelLanguageText.textContent = t('label_language');
     const labelShowHistoryText = document.getElementById('labelShowHistoryText');
     if (labelShowHistoryText) labelShowHistoryText.textContent = t('label_show_history');
+    const labelCitationDetailsText = document.getElementById('labelCitationDetailsText');
+    if (labelCitationDetailsText) labelCitationDetailsText.textContent = t('label_citation_details');
     const settingsBtn = document.getElementById('settingsBtn');
     if (settingsBtn) settingsBtn.title = t('label_settings');
     const showHistoryToggle = document.getElementById('showHistoryToggle');
     if (showHistoryToggle) showHistoryToggle.checked = this.showHistory;
+    const citationDetailsToggle = document.getElementById('citationDetailsToggle');
+    if (citationDetailsToggle) citationDetailsToggle.checked = this.enableCitationDetails;
 
     await this.loadAuthors();
     this.updateLastUpdateTime();
     this.updateStatsSummary();
+    // banner 文案也需要随语言刷新（init 时已加载，这里覆盖切语言的场景）
+    await this.loadAntiCrawlBanner();
 }
 
 async init() {
     this.showHistory = await this.getShowHistory();
+    this.enableCitationDetails = await this.getEnableCitationDetails();
     await this.applyLanguage();
     this.bindEvents();
     this.startStorageListener();
+    await this.loadAntiCrawlBanner();
+
+    // 更新公告：版本号不匹配时弹一次（覆盖引用历史 + 新增引用追踪两项更新）
+    // 用公告替代 warmup init 检查，避免升级用户连弹两个模态
+    const lastAnnouncement = await this.getLastUpdateAnnouncementVersion();
+    if (lastAnnouncement !== this.UPDATE_ANNOUNCEMENT_VERSION) {
+        this.showUpdateAnnouncement();
+        await this.setLastUpdateAnnouncementVersion(this.UPDATE_ANNOUNCEMENT_VERSION);
+        // 公告已包含 warmup 说明，标记 warmup 已提示，避免用户在公告还开着时
+        // 去开 toggle 又叠一个 warmup 模态
+        await this.setWarmupNoticeShown(true);
+    }
+}
+
+// 反爬告警：检测到 Scholar 反爬后，background 把被拦的引用列表页 URL 存入 storage
+// popup 打开时读出，24h 内有效，提示用户在浏览器里手动通过机器人验证
+// （Scholar 验证是 cookie 级别，验证后扩展后续 fetch 会带上同 cookie 的验证态）
+async loadAntiCrawlBanner() {
+    const alert = await this.getAntiCrawlAlert();
+    const banner = document.getElementById('antiCrawlBanner');
+    if (!banner) return;
+
+    if (!alert) {
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+        return;
+    }
+
+    // 24h 过期：避免用户长期不开 popup 时看到陈旧告警
+    const ageMs = Date.now() - (alert.timestamp || 0);
+    if (ageMs > 24 * 60 * 60 * 1000) {
+        await this.clearAntiCrawlAlert();
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+        return;
+    }
+
+    const paperSnippet = alert.paperTitle
+        ? alert.paperTitle.length > 80 ? alert.paperTitle.substring(0, 80) + '...' : alert.paperTitle
+        : '';
+    const authorName = alert.authorName || '';
+
+    banner.innerHTML = `
+        <button class="anticrawl-dismiss-btn" title="${t('anticrawl_dismiss')}">×</button>
+        <div class="anticrawl-title">${t('anticrawl_title')}</div>
+        <div class="anticrawl-body">${t('anticrawl_body')}</div>
+        ${paperSnippet ? `
+            <div class="anticrawl-paper">
+                ${authorName ? `<strong>${authorName}</strong> · ` : ''}${paperSnippet}
+            </div>
+        ` : ''}
+        <div class="anticrawl-actions">
+            <button class="anticrawl-open-btn">📖 ${t('anticrawl_open')}</button>
+            <button class="anticrawl-verified-btn">✓ ${t('anticrawl_verified')}</button>
+        </div>
+    `;
+    banner.style.display = 'block';
+
+    banner.querySelector('.anticrawl-dismiss-btn').addEventListener('click', async () => {
+        await this.clearAntiCrawlAlert();
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+    });
+    banner.querySelector('.anticrawl-open-btn').addEventListener('click', async () => {
+        if (alert.citingUrl) {
+            chrome.tabs.create({ url: alert.citingUrl });
+        }
+        // 不清告警、不隐藏 banner：用户在新 tab 完成验证后，
+        // 回来点"已验证"按钮触发刷新补基线
+    });
+    banner.querySelector('.anticrawl-verified-btn').addEventListener('click', async () => {
+        // 先清 alert + 隐藏 banner，给即时反馈
+        // 若 refresh 仍被反爬，background 会重新 setAntiCrawlAlert，
+        // storage onChanged 监听器会再次显示 banner
+        await this.clearAntiCrawlAlert();
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+        // 立即触发刷新：executeAutoRefresh 会跑 initializeBaseline，
+        // 趁 Scholar 验证态还没过期把失败的基线补上（不 await，让 background 慢慢跑）
+        this.refreshAll();
+    });
+}
+
+async getAntiCrawlAlert() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get('antiCrawlAlert', (result) => {
+            resolve(result.antiCrawlAlert || null);
+        });
+    });
+}
+
+async clearAntiCrawlAlert() {
+    return new Promise((resolve) => {
+        chrome.storage.local.remove('antiCrawlAlert', resolve);
+    });
 }
 
 startStorageListener() {
@@ -53,9 +157,14 @@ startStorageListener() {
             this.loadAuthors();
             this.updateStatsSummary();
         }
-        
+
         if (namespace === 'local' && changes.lastUpdateTime) {
             this.updateLastUpdateTime();
+        }
+
+        // 反爬告警变化：手动刷新触发反爬时，banner 立即显示
+        if (namespace === 'local' && 'antiCrawlAlert' in changes) {
+            this.loadAntiCrawlBanner();
         }
     });
     
@@ -87,6 +196,22 @@ bindEvents() {
         await this.setShowHistory(this.showHistory);
         await this.loadAuthors();
     });
+    const citationDetailsToggle = document.getElementById('citationDetailsToggle');
+    if (citationDetailsToggle) {
+        citationDetailsToggle.addEventListener('change', async (e) => {
+            this.enableCitationDetails = e.target.checked;
+            await this.setEnableCitationDetails(this.enableCitationDetails);
+            // 首次开启时提示一次：第一次刷新用于建立基线，明细从第二次起展示
+            if (e.target.checked) {
+                const shown = await this.getWarmupNoticeShown();
+                if (!shown) {
+                    this.showWarmupNotice();
+                    await this.setWarmupNoticeShown(true);
+                }
+            }
+            await this.loadAuthors();
+        });
+    }
     document.addEventListener('click', (e) => {
         if (settingsPanel.classList.contains('open') &&
             !settingsPanel.contains(e.target) &&
@@ -501,7 +626,7 @@ checkHasMorePages(html) {
     return hasTable && !hasEndMarker;
 }
 
-// 手动刷新所有作者（获取完整论文列表）
+// 手动刷新：委托给 background 走完整 autoRefresh 流程（含 enrichCitationDetails）
 async refreshAll() {
     const authors = await this.getStoredAuthors();
     if (authors.length === 0) {
@@ -521,7 +646,7 @@ async refreshAll() {
             hasExpiredChanges = true;
         }
     });
-    
+
     if (hasExpiredChanges) {
         await this.saveAuthors(authors);
     }
@@ -533,55 +658,25 @@ async refreshAll() {
 
     let successCount = 0;
     let errorCount = 0;
-    const failedAuthors = [];
+    let failedAuthors = [];
 
-    for (let i = 0; i < authors.length; i++) {
-        try {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
-            // 获取完整的更新信息，包括所有论文
-            const updatedInfo = await this.fetchCompleteAuthorInfo(authors[i].url);
-            
-            // 检查引用变化
-            if (updatedInfo.totalCitations !== authors[i].totalCitations) {
-                updatedInfo.hasNewCitations = true;
-                updatedInfo.previousCitations = authors[i].totalCitations;
-                updatedInfo.changeTimestamp = new Date().toISOString();
-                
-                // 比较论文变化（如果有旧论文数据）
-                if (authors[i].papers && authors[i].papers.length > 0) {
-                    updatedInfo.paperChanges = this.comparePapers(authors[i].papers, updatedInfo.papers);
-                    console.log(`${updatedInfo.name} 检测到 ${updatedInfo.paperChanges.length} 篇论文引用变化`);
-                }
-            } else {
-                updatedInfo.hasNewCitations = authors[i].hasNewCitations;
-                updatedInfo.previousCitations = authors[i].previousCitations;
-                updatedInfo.changeTimestamp = authors[i].changeTimestamp;
-                updatedInfo.paperChanges = authors[i].paperChanges;
-                
-                if (!this.isChangeRecent(updatedInfo.changeTimestamp)) {
-                    updatedInfo.hasNewCitations = false;
-                    delete updatedInfo.previousCitations;
-                    delete updatedInfo.changeTimestamp;
-                    delete updatedInfo.paperChanges;
-                }
-            }
-            
-            authors[i] = {...authors[i], ...updatedInfo};
-            this.appendHistorySnapshot(authors[i], authors[i].totalCitations, authors[i].hIndex, authors[i].i10Index);
-            successCount++;
-            
-            await this.saveAuthors(authors);
-            await this.loadAuthors();
-            
-        } catch (error) {
-            console.error(`刷新作者 ${authors[i].name} 失败:`, error);
-            errorCount++;
-            failedAuthors.push({
-                name: authors[i].name,
-                error: error.message
-            });
+    try {
+        const response = await chrome.runtime.sendMessage({action: 'manualRefresh'});
+        if (response && response.success && response.result) {
+            successCount = response.result.successCount || 0;
+            errorCount = response.result.errorCount || 0;
+            failedAuthors = response.result.errors || [];
+        } else {
+            // background 抛错被 handleMessage 外层 catch 捕获，或返回 success:false
+            const errMsg = (response && response.error) || 'background 处理失败';
+            console.error('手动刷新失败:', errMsg);
+            errorCount = authors.length;
+            failedAuthors = authors.map(a => ({name: a.name, error: errMsg}));
         }
+    } catch (e) {
+        console.error('手动刷新异常:', e);
+        errorCount = authors.length;
+        failedAuthors = authors.map(a => ({name: a.name, error: e.message}));
     }
 
     refreshBtn.textContent = originalText;
@@ -640,12 +735,16 @@ comparePapers(oldPapers, newPapers) {
 async showPaperChanges(userId) {
     const authors = await this.getStoredAuthors();
     const author = authors.find(a => a.userId === userId);
-    
+
     if (!author || !author.paperChanges || author.paperChanges.length === 0) {
         alert(t('alert_no_paper_changes'));
         return;
     }
-    
+
+    // 用 title → paper 映射查 warmedUp 状态，判断无数据时属于哪种情况
+    const paperMap = new Map();
+    (author.papers || []).forEach(p => paperMap.set(p.title, p));
+
     const modal = document.createElement('div');
     modal.className = 'paper-changes-modal';
     modal.innerHTML = `
@@ -655,37 +754,90 @@ async showPaperChanges(userId) {
                 <button class="close-btn">×</button>
             </div>
             <div class="modal-body">
-                ${author.paperChanges.map(change => `
-                    <div class="paper-change-item">
-                        <div class="paper-title">${change.title}</div>
-                        <div class="paper-info">
-                            <span class="paper-year">${change.year}</span>
-                            <span class="citation-change ${change.change > 0 ? 'positive' : 'negative'}">
-                                ${change.oldCitations} → ${change.newCitations} (${change.change > 0 ? '+' : ''}${change.change})
-                            </span>
+                ${author.paperChanges.map(change => {
+                    const newCiters = change.newCiters || [];
+                    const hasData = newCiters.length > 0;
+                    return `
+                        <div class="paper-change-item">
+                            <div class="paper-title">${change.title}</div>
+                            <div class="paper-info">
+                                <span class="paper-year">${change.year}</span>
+                                <span class="citation-change ${change.change > 0 ? 'positive' : 'negative'}">
+                                    ${change.oldCitations} → ${change.newCitations} (${change.change > 0 ? '+' : ''}${change.change})
+                                </span>
+                            </div>
+                            ${hasData ? `
+                                <div class="new-citers-block">
+                                    <div class="new-citers-header">
+                                        <span>${t('new_citers_toggle', {count: newCiters.length})}</span>
+                                        <span class="arrow">▶</span>
+                                    </div>
+                                    <div class="new-citers-list" style="display:none;">
+                                        ${newCiters.map(c => `
+                                            <div class="citer-item">
+                                                ${c.link ? `<a href="${c.link}" target="_blank" class="citer-title">${c.title}</a>` : `<span class="citer-title">${c.title}</span>`}
+                                                <div class="citer-meta">${[c.authors, c.year].filter(Boolean).join(' · ')}</div>
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            ` : `
+                                <div class="new-citers-empty">${this.renderNoCitersReason(change, paperMap, author)}</div>
+                            `}
                         </div>
-                        ${change.link ? `<a href="${change.link}" target="_blank" class="paper-link">${t('view_details')}</a>` : ''}
-                    </div>
-                `).join('')}
+                    `;
+                }).join('')}
             </div>
         </div>
     `;
     
     const closeBtn = modal.querySelector('.close-btn');
     closeBtn.addEventListener('click', () => {
-        document.body.style.minHeight = '';
         modal.remove();
     });
 
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
-            document.body.style.minHeight = '';
             modal.remove();
         }
     });
 
-    document.body.style.minHeight = '600px';
+    modal.querySelectorAll('.new-citers-header').forEach(header => {
+        header.addEventListener('click', () => {
+            const list = header.nextElementSibling;
+            if (!list) return;
+            const expanded = list.style.display !== 'none';
+            list.style.display = expanded ? 'none' : 'block';
+            header.classList.toggle('expanded', !expanded);
+        });
+    });
+
     document.body.appendChild(modal);
+}
+
+// 无新增引用明细时，根据状态给出具体原因
+// （追踪关闭 / 作者级关闭 / 超阈值 / 抓取失败 / 预热中 / 真无新增）
+renderNoCitersReason(change, paperMap, author) {
+    let reason;
+    if (!this.enableCitationDetails) {
+        reason = t('reason_tracking_off');
+    } else if (!author.citationDetailsEnabled) {
+        reason = t('reason_author_off');
+    } else if (change.newCitations > 100) {
+        reason = t('reason_over_threshold');
+    } else if (change.fetchFailed) {
+        // 抓取失败（详情页解析失败/网络错/反爬未触发告警）：排在预热之前，
+        // 因为预热失败时 warmedUp 也是 false，但失败信号更具体
+        reason = t('reason_fetch_failed');
+    } else {
+        const paper = paperMap.get(change.title);
+        if (!paper || !paper.warmedUp) {
+            reason = t('reason_warmup');
+        } else {
+            reason = t('reason_no_new');
+        }
+    }
+    return t('no_citers_status', {reason});
 }
 
 isChangeRecent(changeTimestamp) {
@@ -693,7 +845,7 @@ isChangeRecent(changeTimestamp) {
     const changeTime = new Date(changeTimestamp);
     const now = new Date();
     const hoursDiff = (now - changeTime) / (1000 * 60 * 60);
-    return hoursDiff < 24;
+    return hoursDiff < 24 * 7;
 }
 
 async markAsRead(userId) {
@@ -724,6 +876,19 @@ async saveAuthor(authorInfo) {
         authorInfo.history = authors[existingIndex].history || [];
         authorInfo.historyExpanded = authors[existingIndex].historyExpanded;
         authorInfo.historyRange = authors[existingIndex].historyRange;
+
+        // 把旧 paper 的 seenCiterIds / warmedUp 按 title 迁到新 paper
+        // 否则 re-add 时新 paper 列表会覆盖掉已有基线
+        if (authors[existingIndex].papers && authorInfo.papers) {
+            const oldMap = new Map();
+            authors[existingIndex].papers.forEach(p => oldMap.set(p.title, p));
+            authorInfo.papers.forEach(np => {
+                const op = oldMap.get(np.title);
+                if (!op) return;
+                if (op.seenCiterIds) np.seenCiterIds = op.seenCiterIds;
+                if (op.warmedUp) np.warmedUp = op.warmedUp;
+            });
+        }
 
         // 如果作者已存在，检查引用变化
         if (authorInfo.totalCitations !== authors[existingIndex].totalCitations) {
@@ -905,6 +1070,113 @@ async setShowHistory(value) {
     });
 }
 
+async getEnableCitationDetails() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['enableCitationDetails'], (result) => {
+            resolve(result.enableCitationDetails === true);
+        });
+    });
+}
+
+async setEnableCitationDetails(value) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set({enableCitationDetails: !!value}, resolve);
+    });
+}
+
+async getWarmupNoticeShown() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['warmupNoticeShown'], (result) => {
+            resolve(result.warmupNoticeShown === true);
+        });
+    });
+}
+
+async setWarmupNoticeShown(value) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set({warmupNoticeShown: !!value}, resolve);
+    });
+}
+
+async getLastUpdateAnnouncementVersion() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get(['lastUpdateAnnouncementVersion'], (result) => {
+            resolve(result.lastUpdateAnnouncementVersion);
+        });
+    });
+}
+
+async setLastUpdateAnnouncementVersion(version) {
+    return new Promise((resolve) => {
+        chrome.storage.local.set({lastUpdateAnnouncementVersion: version}, resolve);
+    });
+}
+
+showUpdateAnnouncement() {
+    if (document.querySelector('.update-announcement-modal')) return;
+
+    const modal = document.createElement('div');
+    modal.className = 'paper-changes-modal update-announcement-modal';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>${t('update_announcement_title')}</h3>
+                <button class="close-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 13px; line-height: 1.6; color: #333; margin: 0;">
+                    ${t('update_announcement_body')}
+                </p>
+            </div>
+            <div style="padding: 12px 20px; border-top: 1px solid #e0e0e0; text-align: right; background: #f8f9fa; flex-shrink: 0;">
+                <button class="announcement-ok-btn" style="background: #4285f4; color: white; padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500;">${t('update_announcement_ok')}</button>
+            </div>
+        </div>
+    `;
+
+    const dismiss = () => modal.remove();
+    modal.querySelector('.close-btn').addEventListener('click', dismiss);
+    modal.querySelector('.announcement-ok-btn').addEventListener('click', dismiss);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) dismiss();
+    });
+
+    document.body.appendChild(modal);
+}
+
+showWarmupNotice() {
+    // 同一 popup 会话内避免重复弹
+    if (document.querySelector('.warmup-notice-modal')) return;
+
+    const modal = document.createElement('div');
+    modal.className = 'paper-changes-modal warmup-notice-modal';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>${t('warmup_notice_title')}</h3>
+                <button class="close-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size: 13px; line-height: 1.6; color: #333; margin: 0;">
+                    ${t('warmup_notice_body')}
+                </p>
+            </div>
+            <div style="padding: 12px 20px; border-top: 1px solid #e0e0e0; text-align: right; background: #f8f9fa; flex-shrink: 0;">
+                <button class="warmup-ok-btn" style="background: #4285f4; color: white; padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500;">${t('warmup_notice_ok')}</button>
+            </div>
+        </div>
+    `;
+
+    const dismiss = () => modal.remove();
+    modal.querySelector('.close-btn').addEventListener('click', dismiss);
+    modal.querySelector('.warmup-ok-btn').addEventListener('click', dismiss);
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) dismiss();
+    });
+
+    document.body.appendChild(modal);
+}
+
 async setLastUpdateTime() {
     const now = new Date().toISOString();
     return new Promise((resolve) => {
@@ -922,12 +1194,16 @@ async getLastUpdateTime() {
 
 async deleteAuthor(userId) {
     if (!confirm(t('confirm_delete'))) return;
-    
+
     const authors = await this.getStoredAuthors();
     const filteredAuthors = authors.filter(a => a.userId !== userId);
     await this.saveAuthors(filteredAuthors);
     await this.loadAuthors();
     this.updateStatsSummary();
+
+    // 故意不清 antiCrawlAlert：alert 里的 citingUrl 是 Scholar 公开链接，
+    // 用户点开仍能完成验证（验证是 cookie 级，与作者存在与否无关）。
+    // 下次 refresh 若仍反爬会自然刷新 alert；若已解除则用户已点开自行清除。
 }
 
 async loadAuthors() {
@@ -998,6 +1274,14 @@ async loadAuthors() {
                     <div><strong>${t('label_fields')}</strong> ${author.interests || t('unknown_fields')}</div>
                     <div><strong>${t('label_total_papers')}</strong> <span style="color: #1a73e8; font-weight: bold;">${totalPapers}</span> ${t('paper_counter')}</div>
                     ${author.workingDomain ? `<div class="working-domain">${t('access_via', {domain: author.workingDomain})}</div>` : ''}
+                    ${this.enableCitationDetails ? `
+                    <div class="citation-details-row">
+                        <span class="cd-label">${t('label_citation_details')}</span>
+                        <label class="toggle toggle-mini">
+                            <input type="checkbox" class="cd-toggle" data-user-id="${author.userId}" ${author.citationDetailsEnabled ? 'checked' : ''}>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>` : ''}
                 </div>
                 <div class="citation-info">
                     <div class="citation-item">
@@ -1085,6 +1369,18 @@ async loadAuthors() {
         btn.addEventListener('click', (e) => {
             const userId = e.target.getAttribute('data-user-id');
             this.showPaperChanges(userId);
+        });
+    });
+
+    container.querySelectorAll('.cd-toggle').forEach(cb => {
+        cb.addEventListener('change', async (e) => {
+            const userId = e.target.getAttribute('data-user-id');
+            const authors = await this.getStoredAuthors();
+            const a = authors.find(x => x.userId === userId);
+            if (a) {
+                a.citationDetailsEnabled = e.target.checked;
+                await this.saveAuthors(authors);
+            }
         });
     });
 

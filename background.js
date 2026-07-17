@@ -17,6 +17,10 @@ constructor() {
     this.REFRESH_INTERVAL_MINUTES = 30;
     this.ALARM_NAME = 'scholarAutoRefresh';
     this.KEEPALIVE_ALARM = 'keepAlive';
+
+    // 引用明细追踪硬上限：超过此引用数的论文不追踪（受限于反爬 + 抓取页数 cap，
+    // 高引用论文无法建立完整基线，强行追踪会污染 diff 并大幅增加封号风险）
+    this.MAX_TRACKABLE_CITATIONS = 100;
     
     // 修复：移除实例变量，改用持久化存储
     this.notificationCooldown = 5 * 60 * 1000; // 5分钟冷却时间（常量）
@@ -27,7 +31,7 @@ constructor() {
 
 async init() {
     I18n.currentLang = await I18n.getLanguage();
-    this.setupAlarms();
+    this.setupAlarms(false);
     this.setupEventListeners();
     await this.dedupeHistoryOnce();
 
@@ -37,36 +41,32 @@ async init() {
     }, 3000);
 }
 
-setupAlarms() {
-    // 先清除现有的alarm
-    chrome.alarms.clear(this.ALARM_NAME, (wasCleared) => {
-        console.log(`🔄 清除现有定时任务: ${wasCleared ? '成功' : '无需清除'}`);
-        
-        // 创建新的定时任务 - 关键修复：立即开始，然后周期执行
-        chrome.alarms.create(this.ALARM_NAME, {
-            delayInMinutes: 0.1,  // 6秒后立即执行第一次
-            periodInMinutes: this.REFRESH_INTERVAL_MINUTES
-        });
-        
-        console.log(`⏰ 已创建定时任务: 立即开始，然后每${this.REFRESH_INTERVAL_MINUTES}分钟执行`);
-        
-        // 验证创建是否成功
-        setTimeout(() => {
-            chrome.alarms.get(this.ALARM_NAME, (alarm) => {
-                if (alarm) {
-                    console.log('✅ 定时任务创建成功，下次执行:', new Date(alarm.scheduledTime));
-                } else {
-                    console.error('❌ 定时任务创建失败，重试...');
-                    this.setupAlarms(); // 重试
+setupAlarms(forceReset = false) {
+    chrome.alarms.get(this.ALARM_NAME, (existingAlarm) => {
+        const needCreate = forceReset || !existingAlarm;
+        if (!needCreate) {
+            console.log(`✅ 定时任务已存在，下次执行: ${new Date(existingAlarm.scheduledTime)}`);
+            chrome.alarms.get(this.KEEPALIVE_ALARM, (ka) => {
+                if (!ka) {
+                    chrome.alarms.create(this.KEEPALIVE_ALARM, {
+                        delayInMinutes: 1,
+                        periodInMinutes: 10
+                    });
                 }
             });
-        }, 1000);
-    });
-
-    // 创建保活alarm
-    chrome.alarms.create(this.KEEPALIVE_ALARM, {
-        delayInMinutes: 1,
-        periodInMinutes: 10
+            return;
+        }
+        chrome.alarms.clear(this.ALARM_NAME, () => {
+            chrome.alarms.create(this.ALARM_NAME, {
+                delayInMinutes: 0.1,
+                periodInMinutes: this.REFRESH_INTERVAL_MINUTES
+            });
+            chrome.alarms.create(this.KEEPALIVE_ALARM, {
+                delayInMinutes: 1,
+                periodInMinutes: 10
+            });
+            console.log(`⏰ 已创建定时任务 (forceReset=${forceReset})`);
+        });
     });
 }
 
@@ -95,7 +95,7 @@ setupEventListeners() {
     // 扩展安装/更新事件
     chrome.runtime.onInstalled.addListener((details) => {
         console.log('📦 扩展事件:', details.reason);
-        this.setupAlarms();
+        this.setupAlarms(true);
         
         if (details.reason === 'install') {
             this.showNotification({
@@ -105,12 +105,17 @@ setupEventListeners() {
                 message: t('notify_installed')
             });
         }
+
+        // 更新时清理旧版本可能堆叠的桌面通知（dual-ID 时代遗留）
+        if (details.reason === 'update') {
+            chrome.notifications.clear('scholar-citation-multi');
+        }
     });
 
     // Chrome启动事件
     chrome.runtime.onStartup.addListener(() => {
         console.log('🚀 Chrome启动，重新设置定时任务');
-        this.setupAlarms();
+        this.setupAlarms(false);
     });
 
     // 消息监听器 - 修复：添加缺失的消息处理
@@ -156,12 +161,16 @@ async handleMessage(request, sender) {
         case 'manualRefresh':
             console.log('🔄 手动刷新请求');
             // 手动刷新时不发送通知，避免重复
-            await this.executeAutoRefresh(false); // 传入参数禁用通知
-            return {success: true, message: '手动刷新完成'};
+            const refreshResult = await this.executeAutoRefresh(false);
+            return {
+                success: true,
+                message: '手动刷新完成',
+                result: refreshResult || {successCount: 0, errorCount: 0, errors: []}
+            };
             
         case 'resetAlarm':
             console.log('⚡ 重置定时任务请求');
-            this.setupAlarms();
+            this.setupAlarms(true);
             return {success: true, message: '定时任务已重置'};
             
         case 'clearLogs':
@@ -197,10 +206,13 @@ async performStartupCheck() {
 
         console.log(`⏰ 距离上次更新: ${Math.round(timeSinceLastUpdate)}分钟`);
 
-        // 如果超过35分钟没有更新，立即执行一次
+        // 如果超过35分钟没有更新，提前 alarm 让监听器统一触发（避免与 alarm 双重 executeAutoRefresh）
         if (timeSinceLastUpdate > 35) {
-            console.log('⚡ 距离上次更新时间过长，立即执行刷新');
-            await this.executeAutoRefresh();
+            console.log('⚡ 距离上次更新时间过长，提前 alarm 立即触发');
+            chrome.alarms.create(this.ALARM_NAME, {
+                delayInMinutes: 0.1,
+                periodInMinutes: this.REFRESH_INTERVAL_MINUTES
+            });
         }
 
         this.ensureAlarmIsActive();
@@ -217,7 +229,7 @@ async performHealthCheck() {
         chrome.alarms.get(this.ALARM_NAME, (alarm) => {
             if (!alarm) {
                 console.log('⚠️ 主定时任务丢失，重新创建');
-                this.setupAlarms();
+                this.setupAlarms(false);
             } else {
                 console.log('✅ 定时任务正常，下次执行:', new Date(alarm.scheduledTime));
             }
@@ -249,7 +261,7 @@ async ensureAlarmIsActive() {
         chrome.alarms.get(this.ALARM_NAME, (alarm) => {
             if (!alarm) {
                 console.log('⚠️ 定时任务不存在，重新创建');
-                this.setupAlarms();
+                this.setupAlarms(false);
             } else {
                 console.log('✅ 定时任务正常运行，下次执行时间:', new Date(alarm.scheduledTime));
             }
@@ -282,29 +294,48 @@ async saveNotificationInfo(hash, time) {
 
 // 执行自动刷新 - 修复：添加通知控制参数
 async executeAutoRefresh(enableNotifications = true) {
+    // 并发守卫：防止 alarm 自动刷新与 popup 手动刷新重叠，避免重复请求 Scholar 导致封号
+    if (this._refreshing) {
+        console.log('⏳ 已有刷新任务在执行，跳过本次');
+        return null;
+    }
+    this._refreshing = true;
+
     const startTime = new Date();
     console.log('🔄 开始执行自动刷新...', startTime.toISOString());
-    
+
     try {
         const changes = await this.autoRefreshAll();
-        
+
         const endTime = new Date();
         const duration = endTime - startTime;
         console.log(`✅ 自动刷新完成，耗时: ${duration}ms`);
-        
+
         await this.recordRefreshAttempt(startTime, endTime, true);
-        
-        // 只有在启用通知且有变化时才发送通知
+
+        // 通知过滤：只对引用"增加"发通知，引用减少（Scholar 修正）静默更新基线。
+        // modal 里仍保留所有变化（含减少），用户主动点开能看到。
+        // 不过滤的话 notify_single_change 会出现 "(+-5)" / "从 100 增加到 95" 这种矛盾文案。
+        if (changes) {
+            changes.citationChanges = (changes.citationChanges || []).filter(c => c.increase > 0);
+            changes.paperChanges = (changes.paperChanges || [])
+                .map(p => ({authorName: p.authorName, changes: p.changes.filter(c => c.change > 0)}))
+                .filter(p => p.changes.length > 0);
+        }
+
+        // 只有在启用通知且有正向变化时才发送通知
         if (enableNotifications && changes && (changes.citationChanges.length > 0 || changes.paperChanges.length > 0)) {
             await this.showChangeNotifications(changes.citationChanges, changes.paperChanges);
         }
-        
+
+        return changes;
+
     } catch (error) {
         const endTime = new Date();
         console.error('❌ 自动刷新失败:', error);
-        
+
         await this.recordRefreshAttempt(startTime, endTime, false, error.message);
-        
+
         // 错误通知也要控制
         if (enableNotifications) {
             await this.showNotification({
@@ -314,6 +345,10 @@ async executeAutoRefresh(enableNotifications = true) {
                 message: t('notify_refresh_failed', {error: error.message.substring(0, 100)})
             });
         }
+
+        return null;
+    } finally {
+        this._refreshing = false;
     }
 }
 
@@ -374,15 +409,19 @@ async autoRefreshAll() {
         for (let i = 0; i < authors.length; i++) {
             const author = authors[i];
             console.log(`👤 正在刷新作者: ${author.name} (${i + 1}/${authors.length})`);
-            
+
+            // 每个作者开始前重置反爬标志：本作者的 enrichCitationDetails 反爬不应影响下一个作者，
+            // 但本作者内反爬后跳过 initializeBaseline（Scholar session 级反爬，继续请求也会被拦）
+            this._authorAntiCrawlHit = false;
+
             try {
                 // 添加请求间隔，避免被限制
                 if (i > 0) {
                     await new Promise(resolve => setTimeout(resolve, 3000));
                 }
                 
-                const updatedInfo = await this.fetchCompleteAuthorInfoWithRetry(
-                    author.url, 
+                let updatedInfo = await this.fetchCompleteAuthorInfoWithRetry(
+                    author.url,
                     author.workingDomain
                 );
                 
@@ -402,35 +441,81 @@ async autoRefreshAll() {
                     
                     console.log(`📈 ${author.name} 总引用变化: ${author.totalCitations} -> ${updatedInfo.totalCitations} (+${change.increase})`);
                 } else {
-                    updatedInfo.hasNewCitations = author.hasNewCitations;
-                    updatedInfo.previousCitations = author.previousCitations;
-                    updatedInfo.changeTimestamp = author.changeTimestamp;
-                    
+                    // 引用数没变：重读 storage，避免用循环开始时读到的旧 author 引用。
+                    // 用户可能在抓取期间点"已读"（清掉 hasNewCitations/changeTimestamp/paperChanges）或 re-add 作者。
+                    const latestSnap = await this.getStoredAuthors();
+                    const latestAuthor = latestSnap.find(a => a.userId === author.userId) || author;
+
+                    updatedInfo.hasNewCitations = latestAuthor.hasNewCitations;
+                    updatedInfo.previousCitations = latestAuthor.previousCitations;
+                    updatedInfo.changeTimestamp = latestAuthor.changeTimestamp;
+                    updatedInfo.paperChanges = latestAuthor.paperChanges;
+
                     if (!this.isChangeRecent(updatedInfo.changeTimestamp)) {
+                        // 过期：用 undefined / [] 覆盖（delete 在 spread 时会被 author 的旧值盖回）
                         updatedInfo.hasNewCitations = false;
-                        delete updatedInfo.previousCitations;
-                        delete updatedInfo.changeTimestamp;
+                        updatedInfo.previousCitations = undefined;
+                        updatedInfo.changeTimestamp = undefined;
+                        updatedInfo.paperChanges = [];
                     }
                 }
                 
+                // 把旧论文的 seenCiterIds / warmedUp 按 title 迁到新论文，
+                // 否则未变化的论文每次刷新都会丢失基线（现存 bug，warmup 依赖此元数据）
+                if (author.papers && updatedInfo.papers) {
+                    this.mergePaperMetadata(author.papers, updatedInfo.papers);
+                }
+
                 // 检查论文引用变化
-                if (author.papers && author.papers.length > 0 && 
+                // freshChangeTitles: 本次 refresh 真正检测到变化的论文 title 集合
+                // 传给 enrichCitationDetails，让它只对这些论文重爬引用者；
+                // 累积 paperChanges 里已预热但本次未变化的论文跳过，避免反复请求触发反爬
+                let freshChangeTitles = new Set();
+                if (author.papers && author.papers.length > 0 &&
                     updatedInfo.papers && updatedInfo.papers.length > 0) {
                     const paperChangeList = this.comparePapers(author.papers, updatedInfo.papers);
+                    freshChangeTitles = new Set(paperChangeList.map(c => c.title));
                     if (paperChangeList.length > 0) {
-                        updatedInfo.paperChanges = paperChangeList;
+                        // 累加合并：与已存在的 paperChanges 按 title merge，
+                        // 用户多天不点已读时能看到累积总变化（而非被覆盖）
+                        const existing = Array.isArray(updatedInfo.paperChanges) ? updatedInfo.paperChanges : [];
+                        updatedInfo.paperChanges = this.mergePaperChanges(existing, paperChangeList);
                         paperChanges.push({
                             authorName: author.name,
                             changes: paperChangeList
                         });
-                        console.log(`📄 ${author.name} 检测到 ${paperChangeList.length} 篇论文引用变化`);
-                    } else if (author.paperChanges && this.isChangeRecent(author.changeTimestamp)) {
-                        updatedInfo.paperChanges = author.paperChanges;
+                        console.log(`📄 ${author.name} 检测到 ${paperChangeList.length} 篇论文引用变化（累积 ${updatedInfo.paperChanges.length} 条）`);
+                    }
+                    // 没有新变化时 paperChanges 已在 else 分支从 latestAuthor 取，无需再用旧 author 引用兜底
+                }
+
+                // 新增引用明细：仅对本次检测到变化的论文抓取新引用者
+                // （已预热但本次未变化的累积记录会跳过，保留 newCiters 不动）
+                if (updatedInfo.paperChanges && updatedInfo.paperChanges.length > 0) {
+                    try {
+                        updatedInfo = await this.enrichCitationDetails(author, updatedInfo, freshChangeTitles);
+                    } catch (err) {
+                        console.error(`⚠️ 引用明细抓取异常 (${author.name}):`, err);
                     }
                 }
-                
+
+                // 基线初始化：两开关都开 + 未初始化时，主动为所有合格论文建立基线
+                // workingDomain 缺失时跳过：硬编码 fallback 在某些地区 ping 不通
+                if (author.workingDomain) {
+                    try {
+                        updatedInfo = await this.initializeBaseline(author, updatedInfo, author.workingDomain);
+                    } catch (err) {
+                        console.error(`⚠️ 基线初始化异常 (${author.name}):`, err);
+                    }
+                }
+
+                // 合并前重读 storage：spread 的第一项必须是 latest，否则 history / historyExpanded /
+                // citationDetailsEnabled 等字段会被循环开始时读到的旧 author 引用覆盖
+                const latestSnap2 = await this.getStoredAuthors();
+                const latestAuthor2 = latestSnap2.find(a => a.userId === author.userId) || author;
+
                 authors[i] = {
-                    ...author,
+                    ...latestAuthor2,
                     ...updatedInfo,
                     lastUpdated: new Date().toISOString()
                 };
@@ -451,10 +536,17 @@ async autoRefreshAll() {
                     error: error.message
                 });
 
-                authors[i].lastUpdated = new Date().toISOString();
-                authors[i].lastError = error.message;
-
-                await this.saveAuthors(authors);
+                // 重读 storage 后合并：避免旧 authors[i] 引用覆盖 popup 期间改过的字段
+                const latestErrSnap = await this.getStoredAuthors();
+                const latestErrIdx = latestErrSnap.findIndex(a => a.userId === author.userId);
+                if (latestErrIdx >= 0) {
+                    latestErrSnap[latestErrIdx] = {
+                        ...latestErrSnap[latestErrIdx],
+                        lastUpdated: new Date().toISOString(),
+                        lastError: error.message
+                    };
+                    await this.saveAuthors(latestErrSnap);
+                }
             }
         }
 
@@ -471,7 +563,8 @@ async autoRefreshAll() {
             citationChanges,
             paperChanges,
             successCount,
-            errorCount
+            errorCount,
+            errors
         };
         
     } catch (error) {
@@ -511,12 +604,18 @@ async recordRefreshAttempt(startTime, endTime, success, errorMessage = null) {
     }
 }
 
-// 修复：通知去重和控制方法
+// 通知去重：基于内容生成 hash。冷却期内拦截短期重复，hash 拦截长期相同内容重复。
+// 关键：不放 timestamp，否则超过 5 分钟后 hash 必然变化，hash 检查变成死代码。
+// 旧版 `${name}:${increase}` 会把"上次 +10 (90→100)"和"这次 +10 (100→110)"误判为相同，
+// 改用 oldCitations->newCitations 区分真正不同的事件。
 generateNotificationHash(citationChanges, paperChanges) {
     const data = {
-        citations: citationChanges.map(c => `${c.name}:${c.increase}`).sort(),
-        papers: paperChanges.map(p => `${p.authorName}:${p.changes.length}`).sort(),
-        timestamp: Math.floor(Date.now() / (1000 * 60 * 5)) // 5分钟内的通知视为相同
+        citations: citationChanges
+            .map(c => `${c.name}:${c.oldCitations}->${c.newCitations}`)
+            .sort(),
+        papers: paperChanges
+            .flatMap(p => p.changes.map(c => `${p.authorName}:${c.title}:${c.oldCitations}->${c.newCitations}`))
+            .sort()
     };
     return JSON.stringify(data);
 }
@@ -545,7 +644,7 @@ async shouldShowNotification(citationChanges, paperChanges) {
 // 修复：保存通知时间到持久化存储
 async showNotification(options) {
     try {
-        await chrome.notifications.create(options);
+        await chrome.notifications.create('scholar-error', options);
         const now = Date.now();
         await this.saveNotificationInfo(null, now); // 保存通知时间
         console.log('🔔 通知已发送');
@@ -584,7 +683,7 @@ async showChangeNotifications(citationChanges, paperChanges) {
             message += '\n' + t('notify_paper_changes_single', {count: authorPaperChanges.changes.length});
         }
 
-        await chrome.notifications.create({
+        await chrome.notifications.create('scholar-citation-update', {
             type: 'basic',
             iconUrl: 'icon48.png',
             title: t('notify_citation_update'),
@@ -602,7 +701,9 @@ async showChangeNotifications(citationChanges, paperChanges) {
             message += t('notify_multi_papers', {count: totalPaperChanges});
         }
 
-        await chrome.notifications.create({
+        // 与单作者分支共用同一 ID：chrome.notifications.create(id, ...) 同 ID 更新、不同 ID 堆叠。
+        // 旧版用 'scholar-citation-multi' 会导致单/多分支切换时通知并排堆叠。
+        await chrome.notifications.create('scholar-citation-update', {
             type: 'basic',
             iconUrl: 'icon48.png',
             title: t('notify_multi_title', {count: Math.max(citationChanges.length, paperChanges.length)}),
@@ -636,30 +737,14 @@ async getStatus() {
 }
 
 // 辅助方法
+// 7 天窗口：累加模式下，用户多天不点已读也能看到累积变化；
+// 超过 7 天才认为事件过期，自动清空 paperChanges（避免无限增长）
 isChangeRecent(changeTimestamp) {
     if (!changeTimestamp) return false;
     const changeTime = new Date(changeTimestamp);
     const now = new Date();
     const hoursDiff = (now - changeTime) / (1000 * 60 * 60);
-    return hoursDiff < 24;
-}
-
-comparePapers(oldPapers, newPapers) {
-    const changes = [];
-    
-    for (const newPaper of newPapers) {
-        const oldPaper = oldPapers.find(p => p.title === newPaper.title);
-        if (oldPaper && oldPaper.citations !== newPaper.citations) {
-            changes.push({
-                title: newPaper.title,
-                oldCitations: oldPaper.citations,
-                newCitations: newPaper.citations,
-                increase: newPaper.citations - oldPaper.citations
-            });
-        }
-    }
-    
-    return changes;
+    return hoursDiff < 24 * 7;
 }
 
 // 存储相关方法
@@ -764,11 +849,18 @@ async saveAuthors(authors) {
     return new Promise((resolve) => {
         chrome.storage.local.set({authors}, () => {
             if (chrome.runtime.lastError) {
-                // 配额超限：激进裁剪所有作者的 history，重试一次
-                console.warn('Storage quota exceeded, trimming history:', chrome.runtime.lastError.message);
+                // 配额超限：裁剪 history 与 seenCiterIds，重试一次
+                console.warn('Storage quota exceeded, trimming history & seenCiterIds:', chrome.runtime.lastError.message);
                 authors.forEach(a => {
                     if (a.history && a.history.length > 365) {
                         a.history = a.history.slice(-365);
+                    }
+                    if (Array.isArray(a.papers)) {
+                        a.papers.forEach(p => {
+                            if (p.seenCiterIds && p.seenCiterIds.length > 100) {
+                                p.seenCiterIds = p.seenCiterIds.slice(-100);
+                            }
+                        });
                     }
                 });
                 chrome.storage.local.set({authors}, resolve);
@@ -784,6 +876,37 @@ async getStoredAuthors() {
         chrome.storage.local.get(['authors'], (result) => {
             resolve(result.authors || []);
         });
+    });
+}
+
+// === 反爬告警 ===
+// 触发反爬时把被拦的引用列表页 URL 存下来，popup 打开时读出来给用户「去验证」按钮
+// Scholar 反爬是 session 级别，用户在浏览器里手动通过一次机器人验证后，
+// 扩展后续 fetch 会带上同 cookie 的验证态，下次 refresh 就能正常抓取
+//
+// 单条覆盖式存储（不区分 authorId）：多作者同时反爬时只保留最后一个 alert。
+// 因为 Scholar 验证是 session 级，用户验证任一作者的 link 都会解除全部封锁，
+// 区分 authorId 反而是过度设计
+async setAntiCrawlAlert(author, paperTitle, citingUrl) {
+    if (!citingUrl) return;
+    // 标记本作者本周期已反爬：autoRefreshAll 据此跳过 initializeBaseline
+    this._authorAntiCrawlHit = true;
+    return new Promise((resolve) => {
+        chrome.storage.local.set({
+            antiCrawlAlert: {
+                authorId: author.userId,
+                authorName: author.name,
+                paperTitle,
+                citingUrl,
+                timestamp: Date.now()
+            }
+        }, resolve);
+    });
+}
+
+async clearAntiCrawlAlert() {
+    return new Promise((resolve) => {
+        chrome.storage.local.remove('antiCrawlAlert', resolve);
     });
 }
 
@@ -1102,7 +1225,7 @@ async fetchCompleteAuthorInfo(baseUrl, userId, domain) {
               }
 
               const html = await response.text();
-              const pagePapers = this.extractPapersFromHtmlWithRegex(html, currentIndex);
+              const pagePapers = this.extractPapersFromHtmlWithRegex(html, domain, currentIndex);
               
               if (pagePapers.length === 0) {
                   consecutiveEmptyPages++;
@@ -1146,7 +1269,9 @@ async fetchCompleteAuthorInfo(baseUrl, userId, domain) {
 
   // 从HTML中提取论文信息（使用正则表达式）
 // 增强版论文提取方法 - 处理特殊论文行
-extractPapersFromHtmlWithRegex(html, startIndex = 0) {
+// domain 用于拼接 paperLink，避免跨域 fetch（href 中的 & 必须解码，否则 URL 字面带 &amp; 会导致 Scholar 404）
+// domain 必传：硬编码 fallback 到 scholar.google.com 在某些地区 ping 不通
+extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
     const papers = [];
     
     try {
@@ -1184,7 +1309,9 @@ extractPapersFromHtmlWithRegex(html, startIndex = 0) {
                     // （Google Scholar 实际 HTML 是 href 在前，旧正则会漏抓）
                     const hrefMatch = rowHtml.match(/<a[^>]*href=\"([^\"]*)\"[^>]*class=\"gsc_a_at\"/) ||
                                      rowHtml.match(/<a[^>]*class=\"gsc_a_at\"[^>]*href=\"([^\"]*)\"/);
-                    link = hrefMatch ? `https://scholar.google.com${hrefMatch[1]}` : '';
+                    // 解码 HTML 实体（Scholar 属性中 & 编码为 &amp;，未解码会让 fetch 404）
+                    const cleanHref = hrefMatch ? hrefMatch[1].replace(/&amp;/g, '&') : '';
+                    link = cleanHref ? `https://${domain}${cleanHref}` : '';
                 } else {
                     // 策略2: 处理无链接的标题（如某些引用条目）
                     const noLinkTitleMatch = rowHtml.match(/<span[^>]*class=\"gsc_a_at\"[^>]*>([^<]+)<\/span>/);
@@ -1274,16 +1401,28 @@ extractPapersFromHtmlWithRegex(html, startIndex = 0) {
       return hasTable && !hasEndMarker;
   }
 
+  // 把旧论文的 seenCiterIds / warmedUp 按 title 迁移到新论文
+  mergePaperMetadata(oldPapers, newPapers) {
+      const oldMap = new Map();
+      oldPapers.forEach(p => oldMap.set(p.title, p));
+      newPapers.forEach(np => {
+          const op = oldMap.get(np.title);
+          if (!op) return;
+          if (op.seenCiterIds) np.seenCiterIds = op.seenCiterIds;
+          if (op.warmedUp) np.warmedUp = op.warmedUp;
+      });
+  }
+
   // 比较论文变化
   comparePapers(oldPapers, newPapers) {
       const changes = [];
-      
+
       // 创建旧论文的映射表
       const oldPaperMap = new Map();
       oldPapers.forEach(paper => {
           oldPaperMap.set(paper.title, paper);
       });
-      
+
       // 检查每篇新论文的引用变化
       newPapers.forEach(newPaper => {
           const oldPaper = oldPaperMap.get(newPaper.title);
@@ -1295,15 +1434,546 @@ extractPapersFromHtmlWithRegex(html, startIndex = 0) {
                   newCitations: newPaper.citations,
                   change: change,
                   year: newPaper.year,
-                  link: newPaper.link
+                  link: newPaper.link,
+                  // 透传已见引用者集合，供 enrichCitationDetails 续接
+                  seenCiterIds: oldPaper.seenCiterIds || [],
+                  // fetchFailed 语义："需要 diff 一次"。新建的 change 默认 true，
+                  // enrichCitationDetails 成功 diff 后设 false。
+                  // 这样无论什么原因导致 change 没被处理过（追踪开关刚开、上次反爬 break 在前面、
+                  // 上次 freshChangeTitles 不含本论文），下次 refresh 都会通过 shouldRetryFailed
+                  // 触发重试，避免静默跳过把累积变化永久吞掉
+                  fetchFailed: true
               });
           }
       });
-      
+
       // 按变化量排序（从大到小）
     //   changes.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
-      
+
       return changes;
+  }
+
+  // 合并累积 paperChanges：按 title merge，保留首次 oldCitations 和 firstSeenAt，
+  // 更新 newCitations 和 change；seenCiterIds / newCiters 保留已积累的（enrichCitationDetails 会更新）
+  // 这样用户多天不点已读，能看到"自上次已读以来的累积总变化"，而不是只看到最后一次
+  mergePaperChanges(existing, newChanges) {
+      const MAX_NEW_CITERS_PER_EVENT = 50;
+      const map = new Map();
+      (existing || []).forEach(c => map.set(c.title, {...c}));
+      newChanges.forEach(nc => {
+          const ec = map.get(nc.title);
+          if (ec) {
+              // 已有：保留首次旧值，更新新值
+              map.set(nc.title, {
+                  ...nc,
+                  oldCitations: ec.oldCitations,
+                  change: nc.newCitations - ec.oldCitations,
+                  seenCiterIds: ec.seenCiterIds,
+                  newCiters: (ec.newCiters || []).slice(0, MAX_NEW_CITERS_PER_EVENT),
+                  firstSeenAt: ec.firstSeenAt,
+              });
+          } else {
+              map.set(nc.title, {
+                  ...nc,
+                  firstSeenAt: new Date().toISOString(),
+              });
+          }
+      });
+      return Array.from(map.values());
+  }
+
+  // === 新增引用明细：抓取哪些新论文引用了该作者的文章 ===
+
+  async getEnableCitationDetails() {
+      return new Promise((resolve) => {
+          chrome.storage.local.get(['enableCitationDetails'], (result) => {
+              resolve(result.enableCitationDetails === true);
+          });
+      });
+  }
+
+  async getCitationDetailsThreshold() {
+      // 硬上限，不再可配置。保留方法名是为了 enrichCitationDetails 调用点不变。
+      return this.MAX_TRACKABLE_CITATIONS;
+  }
+
+  // 编排：对每篇合格论文（变化 + 阈值内）抓取新引用者
+  // 首次抓取走 warmup：静默全量建立 seenCiterIds 基线，本次不报告 newCiters
+  // 例外：oldCitations === 0 时无更早基线可比，所有当前引用者本就是新增，直接走 diff 并标记预热完成
+  //
+  // freshChangeTitles: 本次 refresh 真正检测到引用变化的论文 title 集合
+  // 已预热的论文若不在该集合内，跳过 diff 抓取——否则累积模式下每次刷新都会
+  // 对 paperChanges 里所有累积论文重爬引用者列表，浪费请求并加速触发 Scholar 反爬
+  async enrichCitationDetails(author, updatedInfo, freshChangeTitles = new Set()) {
+      const enabled = await this.getEnableCitationDetails();
+      if (!enabled || !author.citationDetailsEnabled) return updatedInfo;
+
+      // workingDomain 缺失时跳过：硬编码 fallback 到 scholar.google.com 在某些地区 ping 不通
+      // （旧数据可能没有 workingDomain，下次 fetchCompleteAuthorInfoWithRetry 会重新确定）
+      if (!author.workingDomain) {
+          console.log(`⏭️ ${author.name} 缺少 workingDomain，跳过引用明细抓取`);
+          return updatedInfo;
+      }
+
+      const threshold = await this.getCitationDetailsThreshold();
+      const domain = author.workingDomain;
+
+      const newPaperMap = new Map();
+      (updatedInfo.papers || []).forEach(p => newPaperMap.set(p.title, p));
+
+      const changes = updatedInfo.paperChanges || [];
+      for (const change of changes) {
+          if (!change.change || change.change <= 0) continue;
+          // 超过 MAX_TRACKABLE_CITATIONS 的论文不追踪：受分页 cap 限制无法建立完整基线
+          // 用 > 而非 >=：正好等于上限（100）时仍可完整抓取（10 页 × 10 条），应追踪
+          if (change.newCitations > threshold) {
+              console.log(`⏭️ 跳过（超上限）: ${change.title.substring(0, 40)} (${change.newCitations} > ${threshold})`);
+              continue;
+          }
+
+          const paperLink = change.link || (newPaperMap.get(change.title) || {}).link;
+          if (!paperLink) {
+              console.log(`⏭️ 跳过（无链接）: ${change.title.substring(0, 40)}`);
+              continue;
+          }
+
+          const newPaper = newPaperMap.get(change.title);
+          const isFirstCitation = change.oldCitations === 0;
+          const needsWarmup = !isFirstCitation && !(newPaper && newPaper.warmedUp);
+
+          // 已预热 + 本次未检测到变化 + 上次 diff 成功：跳过 diff 抓取
+          // warmup 路径不受影响（未预热的论文仍要建基线）；
+          // newCiters 保留累积值不动，modal 里仍能看到过往新增引用者
+          // 用 !== false 而非 === true：兼容旧数据里 fetchFailed 为 undefined 的 change
+          // （从未被 enrichCitationDetails 处理过，应视为需要重试，避免静默跳过把变化永久吞掉）
+          const shouldRetryFailed = change.fetchFailed !== false;
+          if (!needsWarmup && !freshChangeTitles.has(change.title) && !shouldRetryFailed) {
+              continue;
+          }
+
+          // 本次 fetch 的结果引用，循环末尾统一检查 antiCrawl 标志
+          let lastFetchResult = null;
+
+          if (needsWarmup) {
+              console.log(`🔥 预热基线: ${change.title.substring(0, 50)} (当前 ${change.newCitations})`);
+              try {
+                  const result = await this.fetchNewCitersForPaper(paperLink, domain, []);
+                  lastFetchResult = result;
+                  change.newCiters = [];
+                  // 抓取失败（详情页解析失败/网络错/反爬）统一标 fetchFailed 让下次重试。
+                  // 反爬时 updatedSeenIds 是空（fetchNewCitersForPaper 在首页就 break），
+                  // 走这里不写 seenCiterIds / 不标 warmedUp，下次 refresh 重新走 warmup。
+                  // 旧实现把反爬排除在外（!result.antiCrawl），但下次 needsWarmup 仍为 true 会重试，
+                  // 所以 warmup 分支反爬不设 fetchFailed 不会触发静默跳过 bug —— 这里改成统一设是为了
+                  // 和 diff 分支语义一致，并防御未来 warmup 状态判断逻辑变化导致的回归。
+                  if (!result.fetchedAnyPage) {
+                      change.fetchFailed = true;
+                      console.warn(`⚠️ 预热失败（未拿到数据${result.antiCrawl ? '/反爬' : ''}），下次重试: ${change.title.substring(0, 40)}`);
+                  } else {
+                      change.fetchFailed = false;
+                      change.seenCiterIds = result.updatedSeenIds;
+                      // 仅当确实拿到数据才标记预热完成。
+                      // 首页被反爬/网络失败时 fetchNewCitersForPaper 会 break 返回空数组（不抛异常），
+                      // 此时若标记 warmedUp=true，下次 diff 会用空基线把所有当前引用者误判为新增。
+                      const baselineValid = result.updatedSeenIds.length > 0;
+                      if (newPaper) {
+                          newPaper.seenCiterIds = result.updatedSeenIds;
+                          if (baselineValid) newPaper.warmedUp = true;
+                      }
+                      console.log(`✅ 预热${baselineValid ? '完成' : '未完成（未拿到数据，下次重试）'}: ${change.title.substring(0, 40)} 基线 ${result.updatedSeenIds.length} 篇`);
+                  }
+              } catch (err) {
+                  console.warn(`⚠️ 预热失败 (${change.title.substring(0, 30)}):`, err.message);
+                  change.newCiters = [];
+                  change.fetchFailed = true;
+              }
+          } else {
+              const seenSet = Array.isArray(change.seenCiterIds) ? change.seenCiterIds : [];
+              console.log(`🔍 抓取引用论文: ${change.title.substring(0, 50)} (当前 ${change.newCitations}, 已知 ${seenSet.length})`);
+              try {
+                  const result = await this.fetchNewCitersForPaper(paperLink, domain, seenSet);
+                  lastFetchResult = result;
+
+                  // 抓取失败（详情页解析失败/网络错/反爬）统一标 fetchFailed 让下次 refresh 重试。
+                  // 不覆盖 seenCiterIds / newCiters，保留累积值。
+                  // 关键：反爬也必须走这里 —— 旧实现把反爬排除在外（!result.antiCrawl），
+                  // 导致 diff 分支反爬后 fetchFailed=false，下次刷新时 needsWarmup=false +
+                  // freshChangeTitles 不含 + shouldRetryFailed=false，被静默跳过，
+                  // 反爬期间错过的变化明细永远不会被补抓。
+                  if (!result.fetchedAnyPage) {
+                      change.fetchFailed = true;
+                      const prevCount = Array.isArray(change.newCiters) ? change.newCiters.length : 0;
+                      console.warn(`⚠️ 抓取失败（未拿到数据${result.antiCrawl ? '/反爬' : ''}），保留累积 ${prevCount} 篇，下次重试: ${change.title.substring(0, 40)}`);
+                  } else {
+                      change.fetchFailed = false;
+                      change.seenCiterIds = result.updatedSeenIds;
+
+                      // 合并 newCiters（去重 by clusterId），上限 50：
+                      // 用户多天不点已读时，每次 refresh 检测到变化都会跑 diff，
+                      // 本次的新增要追加到已有 newCiters，而非覆盖（否则会丢失之前累积的新增）
+                      const MAX_NEW_CITERS = 50;
+                      const prevCiters = Array.isArray(change.newCiters) ? change.newCiters : [];
+                      const existingIds = new Set(prevCiters.map(c => c.clusterId));
+                      const merged = [...prevCiters];
+                      for (const c of result.newCiters) {
+                          if (!existingIds.has(c.clusterId)) {
+                              merged.push(c);
+                              existingIds.add(c.clusterId);
+                              if (merged.length >= MAX_NEW_CITERS) break;
+                          }
+                      }
+                      change.newCiters = merged;
+
+                      const diffValid = result.updatedSeenIds.length > 0;
+                      if (newPaper) {
+                          newPaper.seenCiterIds = result.updatedSeenIds;
+                          newPaper.newCiters = merged;
+                          // 0→N 路径同样需要拿到数据才标记预热，否则下次走 diff 会全量误报
+                          if (isFirstCitation && diffValid) newPaper.warmedUp = true;
+                      }
+                      console.log(`✅ ${change.title.substring(0, 40)} 本次新增 ${result.newCiters.length} 篇，累积 ${merged.length} 篇`);
+                  }
+              } catch (err) {
+                  console.warn(`⚠️ 抓取引用论文失败 (${change.title.substring(0, 30)}):`, err.message);
+                  // 异常路径：不清空 newCiters，标 fetchFailed 让下次重试
+                  change.fetchFailed = true;
+              }
+          }
+
+          // 反爬触发：存 alert 让 popup 提示用户去验证，并立即结束本作者抓取
+          // Scholar 反爬是 session 级别，继续请求本作者其他论文也会被拦
+          if (lastFetchResult && lastFetchResult.antiCrawl) {
+              await this.setAntiCrawlAlert(author, change.title, lastFetchResult.citingUrl);
+              console.warn(`🚨 反爬触发，结束 ${author.name} 引用明细抓取`);
+              break;
+          }
+
+          await this.randomDelay(2500, 4500);
+      }
+
+      return updatedInfo;
+  }
+
+  // 基线初始化：两开关都开 + 存在未 warmedUp 的合格论文时，主动建立 seenCiterIds
+  // 避免"基线永远是空"的困境 —— enrichCitationDetails 只处理 paperChanges 里有变化的论文，
+  // 不变化的论文永远拿不到基线，导致新增引用者永远显示不出来
+  //
+  // 反爬策略（B 分摊）：每次 refresh 最多初始化 MAX_INITIALIZE_PER_REFRESH 篇，
+  // 利用 30 分钟 alarm 周期自然分摊。140 篇作者约 5 小时自动完成，用户无感
+  //
+  // 状态判断：用 paper.warmedUp 作为每篇论文的断点，所有合格论文都 warmedUp 后 eligible=0 自动跳过
+  async initializeBaseline(author, updatedInfo, domain) {
+      // 本作者本 refresh 周期已反爬：跳过，避免继续请求延长 Scholar 封锁窗口
+      // （反爬标志在 setAntiCrawlAlert 时设置，autoRefreshAll 每个作者开头重置）
+      if (this._authorAntiCrawlHit) {
+          console.log(`⏭️ ${author.name} 本周期已反爬，跳过基线初始化`);
+          return updatedInfo;
+      }
+
+      const enabled = await this.getEnableCitationDetails();
+      if (!enabled || !author.citationDetailsEnabled) {
+          return updatedInfo;
+      }
+
+      const threshold = this.MAX_TRACKABLE_CITATIONS;
+      const eligible = (updatedInfo.papers || []).filter(p =>
+          p.citations > 0 && p.citations <= threshold && p.link && !p.warmedUp
+      );
+
+      if (eligible.length === 0) {
+          return updatedInfo;
+      }
+
+      // 反爬核心：每次 refresh 只初始化一小批，剩下的下次 refresh 继续
+      const MAX_INITIALIZE_PER_REFRESH = 15;
+      const toInit = eligible.slice(0, MAX_INITIALIZE_PER_REFRESH);
+
+      console.log(`📊 ${updatedInfo.name} 开始初始化 ${toInit.length}/${eligible.length} 篇（剩余 ${eligible.length - toInit.length} 篇下次继续）`);
+      let successCount = 0;
+      let consecutiveFailures = 0;
+      const MAX_CONSECUTIVE_FAILURES = 3;
+
+      for (const paper of toInit) {
+          try {
+              const result = await this.fetchNewCitersForPaper(paper.link, domain, []);
+              // 反爬触发：存 alert 提示用户去验证，并立即结束本次初始化
+              // Scholar 反爬是 session 级别，等下次 refresh（30 分钟后）大概率仍被拦
+              if (result.antiCrawl) {
+                  await this.setAntiCrawlAlert(author, paper.title, result.citingUrl);
+                  console.warn(`🚨 反爬触发，立即结束本次初始化（已成功 ${successCount}/${toInit.length}），下次 refresh 继续`);
+                  break;
+              }
+              if (result.updatedSeenIds.length > 0) {
+                  paper.seenCiterIds = result.updatedSeenIds;
+                  paper.warmedUp = true;
+                  successCount++;
+                  consecutiveFailures = 0;
+              } else {
+                  consecutiveFailures++;
+                  console.log(`⚠️ ${paper.title.substring(0, 40)} 基线为空，连续失败 ${consecutiveFailures}`);
+              }
+          } catch (err) {
+              consecutiveFailures++;
+              console.warn(`⚠️ 初始化 ${paper.title.substring(0, 30)} 失败:`, err.message);
+          }
+
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              console.warn(`🚨 连续 ${MAX_CONSECUTIVE_FAILURES} 次失败，停止本次初始化（已成功 ${successCount}/${toInit.length}）`);
+              break;
+          }
+
+          await this.randomDelay(2500, 4500);
+      }
+
+      if (successCount > 0) {
+          console.log(`✅ ${updatedInfo.name} 本次初始化 ${successCount}/${toInit.length}`);
+      } else {
+          console.warn(`❌ ${updatedInfo.name} 本次初始化全部失败，下次刷新重试`);
+      }
+
+      return updatedInfo;
+  }
+
+  // 抓取单篇论文的新引用论文：分页遍历到上限或末页，seen-set 仅用于去重
+  // 返回值：
+  //   - antiCrawl：true 表示 Scholar 触发反爬，调用方应立即停止后续抓取并 setAntiCrawlAlert
+  //   - fetchedAnyPage：是否至少成功抓到一页非反爬 HTML。
+  //     调用方用这个区分"抓取失败"（详情页解析失败/网络错/反爬未触发告警）和"成功但真无新增"，
+  //     避免把抓取失败误判为无新增导致永久卡住（旧实现就是这个 bug）
+  async fetchNewCitersForPaper(paperLink, domain, seenSet) {
+      // 入口 URL：从详情页解析 "Cited by" 链接
+      // 不再用 citation_for= 直拼 cites= —— 前者值是 USER:PAPER 格式（带冒号），
+      // 后者要的是纯数字 cluster ID，直接拼接产不出有效 URL
+      const detailResult = await this.fetchCitingUrlFromDetailPage(paperLink, domain);
+      // 详情页反爬：直接传播 antiCrawl，fallbackUrl 作为 citingUrl 让用户能打开 paperLink 验证
+      if (detailResult.antiCrawl) {
+          return {
+              newCiters: [],
+              updatedSeenIds: [...seenSet],
+              antiCrawl: true,
+              citingUrl: detailResult.fallbackUrl,
+              fetchedAnyPage: false
+          };
+      }
+      const citingUrl = detailResult.citingUrl;
+      if (!citingUrl) {
+          // 详情页解析失败（无 cites= 链接，非反爬）：明确 fetchedAnyPage=false
+          return {
+              newCiters: [],
+              updatedSeenIds: [...seenSet],
+              antiCrawl: false,
+              citingUrl: null,
+              fetchedAnyPage: false
+          };
+      }
+
+      const newCiters = [];
+      const updatedSeenIds = [...seenSet];
+      // Scholar 每页 10 条；10 页 × 10 = 100，与 MAX_TRACKABLE_CITATIONS 对齐
+      const MAX_PAGES = 10;
+      const PAGE_SIZE = 10;
+      let antiCrawl = false;
+      let fetchedAnyPage = false;
+
+      // 默认排序（不加 sortby=）下顺序不稳定，不能基于「命中已见 ID」早停，
+      // 否则会漏掉真正的新增。每次都遍历到 MAX_PAGES 或末页，seen-set 仅用于去重。
+      for (let page = 0; page < MAX_PAGES; page++) {
+          const start = page * PAGE_SIZE;
+          const pageUrl = start === 0 ? citingUrl : `${citingUrl}&start=${start}`;
+
+          if (page > 0) await this.randomDelay(2000, 3500);
+
+          let html;
+          try {
+              html = await this.fetchScholarPage(pageUrl);
+          } catch (err) {
+              console.warn(`⚠️ 引用论文第 ${page + 1} 页抓取失败:`, err.message);
+              break;
+          }
+
+          if (this.detectAntiCrawl(html)) {
+              console.warn('🚨 检测到反爬限制，停止抓取本论文引用论文');
+              antiCrawl = true;
+              break;
+          }
+
+          // 至少成功拿到一页非反爬 HTML：后续 parseCitersFromHtml 即使返回空
+          // 也算"成功但无数据"（可能是引用数=0），不归入抓取失败
+          fetchedAnyPage = true;
+
+          const citers = this.parseCitersFromHtml(html);
+          if (citers.length === 0) {
+              console.log(`📄 第 ${page + 1} 页无论文，结束`);
+              break;
+          }
+
+          for (const c of citers) {
+              if (!updatedSeenIds.includes(c.clusterId)) {
+                  updatedSeenIds.push(c.clusterId);
+                  newCiters.push(c);
+              }
+          }
+
+          if (citers.length < PAGE_SIZE) {
+              console.log(`📋 已到最后一页`);
+              break;
+          }
+      }
+
+      // seen-set FIFO 上限 200
+      const cappedSeenIds = updatedSeenIds.length > 200
+          ? updatedSeenIds.slice(-200)
+          : updatedSeenIds;
+
+      return { newCiters, updatedSeenIds: cappedSeenIds, antiCrawl, citingUrl, fetchedAnyPage };
+  }
+
+  // 访问论文详情页，正则解析出 "Cited by" 链接（统一入口，不再依赖 citation_for_view= 直拼）
+  // 返回 { citingUrl, antiCrawl, fallbackUrl }：
+  //   - citingUrl：解析出的引用列表页 URL；解析失败/反爬时为 null
+  //   - antiCrawl：详情页是否被 Scholar 反爬拦截
+  //   - fallbackUrl：反爬时返回 paperLink 本身，让上层 setAntiCrawlAlert 能引导用户在浏览器打开它完成验证
+  async fetchCitingUrlFromDetailPage(paperLink, domain) {
+      // 防御性解码：旧数据 paperLink 可能含字面 &amp;，会让 Scholar 解析参数失败返回 404
+      const cleanLink = paperLink.replace(/&amp;/g, '&');
+      try {
+          const html = await this.fetchScholarPage(cleanLink);
+          // 详情页反爬检测：captcha 页面不含 cites= 链接，正则 miss 会误判为"无引用"。
+          // 必须显式上报 antiCrawl，让上层走 setAntiCrawlAlert 引导用户验证
+          if (this.detectAntiCrawl(html)) {
+              console.warn('🚨 详情页被反爬拦截');
+              return { citingUrl: null, antiCrawl: true, fallbackUrl: cleanLink };
+          }
+          // 优先匹配 "Cited by" 锚点，否则退化为任意 cites= 链接
+          const match = html.match(/<a[^>]*href="([^"]*cites=\d+[^"]*)"[^>]*>[^<]*Cited by/i)
+                     || html.match(/<a[^>]*href="([^"]*cites=\d+[^"]*)"/);
+          if (!match) return { citingUrl: null, antiCrawl: false, fallbackUrl: null };
+          // HTML 属性值里的 & 是 &amp; 编码的，必须解码，否则 fetch 该 URL 会拿到空结果
+          const rawHref = match[1].replace(/&amp;/g, '&');
+          const href = rawHref.startsWith('http') ? rawHref : `https://${domain}${rawHref}`;
+          return { citingUrl: href, antiCrawl: false, fallbackUrl: null };
+      } catch (e) {
+          console.warn('⚠️ 详情页解析失败:', e.message);
+          return { citingUrl: null, antiCrawl: false, fallbackUrl: null };
+      }
+  }
+
+  // 通用 Scholar 页面抓取（带 UA + 超时），复用 background.js:866 的模式
+  async fetchScholarPage(url) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      try {
+          const response = await fetch(url, {
+              method: 'GET',
+              headers: {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                  'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+                  'Cache-Control': 'no-cache'
+              },
+              signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          return await response.text();
+      } catch (e) {
+          clearTimeout(timeoutId);
+          throw e;
+      }
+  }
+
+  // 随机延迟：固定间隔容易被 Scholar 反爬识别，所有抓取间隔用随机区间
+  randomDelay(minMs, maxMs) {
+      const delay = minMs + Math.random() * (maxMs - minMs);
+      return new Promise(r => setTimeout(r, delay));
+  }
+
+  // 从 scholar?cites= 搜索结果页 HTML 中解析引用论文列表
+  parseCitersFromHtml(html) {
+      const citers = [];
+      const titleRegex = /<h3[^>]*class="gs_rt"[^>]*>([\s\S]*?)<\/h3>/g;
+      let m;
+      while ((m = titleRegex.exec(html)) !== null) {
+          const titleHtml = m[1];
+          const afterTitle = html.substring(m.index + m[0].length);
+
+          // 优先匹配带 cluster= 的链接（稳定 ID）
+          const linkMatch = titleHtml.match(/<a[^>]*href="\/scholar\?[^"]*cluster=([^&"]+)[^"]*"[^>]*>([\s\S]*?)<\/a>/);
+          let clusterId = null;
+          let titleText = '';
+          if (linkMatch) {
+              clusterId = linkMatch[1];
+              titleText = this.stripTags(linkMatch[2]).trim();
+          } else {
+              // 非链接结果（如 [CITATION] 条目）
+              titleText = this.stripTags(titleHtml).replace(/^\[[^\]]*\]\s*/, '').trim();
+              if (!titleText) continue;
+          }
+
+          // 解析作者/年份/出处行
+          const metaMatch = afterTitle.match(/<div class="gs_a">([\s\S]*?)<\/div>/);
+          const meta = metaMatch ? this.stripTags(metaMatch[1]).trim() : '';
+          const years = meta.match(/\b(19|20)\d{2}\b/g);
+          const year = years && years.length > 0 ? years[years.length - 1] : '';
+          let authors = meta;
+          if (year) {
+              authors = meta.replace(new RegExp(',?\\s*' + year + '\\b.*$'), '').trim();
+              const parts = authors.split(',');
+              if (parts.length > 3) authors = parts.slice(0, 3).join(',') + ', et al.';
+          }
+
+          // cluster ID 缺失时用 hash(标题+年份) 作为代理 ID（不稳定，但保证去重可用）
+          const effectiveId = clusterId || this.hashCiterId(titleText, year);
+
+          citers.push({
+              title: titleText,
+              authors,
+              year,
+              clusterId: effectiveId,
+              link: clusterId ? `https://scholar.google.com/scholar?cluster=${clusterId}&hl=en` : ''
+          });
+      }
+      return citers;
+  }
+
+  stripTags(html) {
+      return String(html)
+          .replace(/<[^>]+>/g, '')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&nbsp;/g, ' ');
+  }
+
+  // 反爬页面识别：Scholar 在请求过快/IP 异常时返回 captcha / 异常流量提示页
+  // 详情页和引用列表页都用这个统一判定，避免反爬被静默吞掉
+  // （旧实现只在引用列表页检测，详情页反爬会因 cites= 链接缺失直接返回 null，
+  // 上层误判为"无引用"，触发"本次无新增"的误导文案）
+  detectAntiCrawl(html) {
+      if (!html) return false;
+      const signals = [
+          'unusual traffic',
+          'captcha',
+          "Please show you're not a robot",
+          '异常流量',
+          'detected unusual traffic',
+          'show that you are not a robot'
+      ];
+      return signals.some(s => html.includes(s));
+  }
+
+  // FNV-like 哈希作为代理 citer ID（仅在 cluster ID 不可得时使用）
+  hashCiterId(title, year) {
+      const norm = (title + '|' + year).toLowerCase().replace(/[^a-z0-9]/g, '');
+      let hash = 0;
+      for (let i = 0; i < norm.length; i++) {
+          hash = ((hash << 5) - hash + norm.charCodeAt(i)) | 0;
+      }
+      return 'h_' + Math.abs(hash).toString(36);
   }
 }
 
