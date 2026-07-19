@@ -30,6 +30,11 @@ Or maybe you're in a friendly (but totally not competitive 😏) citation race w
 - **📊 Complete Publication Monitoring**: Track all papers from a researcher's Google Scholar profile
 - **📈 Detailed Citation Changes**: View specific citation changes for papers
 - **🔄 Enhanced Auto-Update**: Improved background refresh system with smarter scheduling and error handling
+- **📈 Citation History Visualization**: Expand any author card to see citation trend charts over 7D / 30D / 90D / 1Y / All time
+- **🔍 New Citing Papers Tracking**: Automatically identifies which papers newly cite yours — builds a silent baseline in batches (max 15 per refresh), then shows genuinely new citers on each change. Only tracks papers with ≤100 citations to avoid Scholar's anti-bot blocking
+- **📊 Cumulative Change Records**: Multiple citation changes accumulate into a total until you mark them as read (kept for 7 days), so you never miss updates between refreshes
+- **⚙️ Settings Panel**: Toggle citation history display and new-citer tracking per preference
+- **⚠️ Anti-Bot Intercept Banner**: When Google Scholar blocks fetching, a top banner guides you through the robot check and auto-resumes with one click
 
 ### 🚀 Features
 
@@ -136,6 +141,11 @@ Feel free to open an issue or submit a pull request. We welcome all contribution
 - **📊 完整论文监控**：追踪研究者Google Scholar主页上的所有论文
 - **📈 详细引用变化**：查看论文的具体引用变化情况
 - **🔄 增强自动更新**：改进的后台刷新系统，具备更智能的调度和错误处理机制
+- **📈 引用历史可视化**：每个作者卡片可展开查看引用数变化趋势图（7天 / 30天 / 90天 / 1年 / 全部）
+- **🔍 新增引用论文追踪**：自动识别哪些论文新引用了你的文章 —— 静默分批建立基线（每次刷新最多 15 篇），完成后每次变化都展示真正的新增引用者。仅追踪引用数 ≤ 100 的论文，避免触发 Scholar 反爬封号
+- **📊 变化记录累加保留**：未点"已读"时，多次引用变化会累积显示为总变化（7 天内有效），不再错过刷新间隔期间的更新
+- **⚙️ 设置面板**：可开关引用历史显示、新增引用论文追踪
+- **⚠️ 反爬拦截横幅**：当 Google Scholar 拦截抓取时，顶部横幅会引导你完成人机验证，一键点击即可自动恢复
 
 ### 🚀 功能特色
 
