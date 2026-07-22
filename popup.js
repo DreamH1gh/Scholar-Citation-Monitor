@@ -14,7 +14,7 @@ constructor() {
         'scholar.google.cn'
     ];
     // 公告版本号：有新内容时 bump，所有用户会再看一次
-    this.UPDATE_ANNOUNCEMENT_VERSION = 1;
+    this.UPDATE_ANNOUNCEMENT_VERSION = 2;
     this.init();
 }
 
@@ -732,6 +732,14 @@ comparePapers(oldPapers, newPapers) {
     return changes;
 }
 
+// 从 paper.link 提取 Scholar 稳定论文 ID，作为 mergePaperMetadata 主键
+// title 字符串匹配不可靠（HTML 实体、空白、Scholar 改标题都会让 title 变）
+extractPaperId(link) {
+    if (!link) return null;
+    const m = link.match(/citation_for_view=([^&]+)/);
+    return m ? m[1] : null;
+}
+
 async showPaperChanges(userId) {
     const authors = await this.getStoredAuthors();
     const author = authors.find(a => a.userId === userId);
@@ -759,7 +767,7 @@ async showPaperChanges(userId) {
                     const hasData = newCiters.length > 0;
                     return `
                         <div class="paper-change-item">
-                            <div class="paper-title">${change.title}</div>
+                            <div class="paper-title${change.link ? ' is-link' : ''}" ${change.link ? `data-link="${change.link}" title="${t('view_details')}"` : ''}>${change.title}</div>
                             <div class="paper-info">
                                 <span class="paper-year">${change.year}</span>
                                 <span class="citation-change ${change.change > 0 ? 'positive' : 'negative'}">
@@ -775,7 +783,7 @@ async showPaperChanges(userId) {
                                     <div class="new-citers-list" style="display:none;">
                                         ${newCiters.map(c => `
                                             <div class="citer-item">
-                                                ${c.link ? `<a href="${c.link}" target="_blank" class="citer-title">${c.title}</a>` : `<span class="citer-title">${c.title}</span>`}
+                                                ${c.link ? `<a href="${c.link}" class="citer-title" data-link="${c.link}">${c.title}</a>` : `<span class="citer-title">${c.title}</span>`}
                                                 <div class="citer-meta">${[c.authors, c.year].filter(Boolean).join(' · ')}</div>
                                             </div>
                                         `).join('')}
@@ -809,6 +817,16 @@ async showPaperChanges(userId) {
             const expanded = list.style.display !== 'none';
             list.style.display = expanded ? 'none' : 'block';
             header.classList.toggle('expanded', !expanded);
+        });
+    });
+
+    // popup 中 <a target="_blank"> 行为不稳定（popup 易失焦关闭导致打不开），
+    // 改用 chrome.tabs.create 主动开新 tab；被引用论文标题同理
+    modal.querySelectorAll('[data-link]').forEach(el => {
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            const url = el.getAttribute('data-link');
+            if (url) chrome.tabs.create({ url });
         });
     });
 
@@ -877,13 +895,22 @@ async saveAuthor(authorInfo) {
         authorInfo.historyExpanded = authors[existingIndex].historyExpanded;
         authorInfo.historyRange = authors[existingIndex].historyRange;
 
-        // 把旧 paper 的 seenCiterIds / warmedUp 按 title 迁到新 paper
+        // 把旧 paper 的 seenCiterIds / warmedUp 迁到新 paper
         // 否则 re-add 时新 paper 列表会覆盖掉已有基线
+        // 主键优先级：citation_for_view ID（稳定）→ title 字符串（fallback），
+        // 避免 title 微小差异导致迁移失败、已预热论文反复重新初始化
         if (authors[existingIndex].papers && authorInfo.papers) {
-            const oldMap = new Map();
-            authors[existingIndex].papers.forEach(p => oldMap.set(p.title, p));
+            const oldByTitle = new Map();
+            const oldById = new Map();
+            authors[existingIndex].papers.forEach(p => {
+                oldByTitle.set(p.title, p);
+                const pid = this.extractPaperId(p.link);
+                if (pid) oldById.set(pid, p);
+            });
             authorInfo.papers.forEach(np => {
-                const op = oldMap.get(np.title);
+                const npId = this.extractPaperId(np.link);
+                let op = npId ? oldById.get(npId) : null;
+                if (!op) op = oldByTitle.get(np.title);
                 if (!op) return;
                 if (op.seenCiterIds) np.seenCiterIds = op.seenCiterIds;
                 if (op.warmedUp) np.warmedUp = op.warmedUp;

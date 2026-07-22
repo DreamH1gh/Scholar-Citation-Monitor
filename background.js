@@ -21,7 +21,14 @@ constructor() {
     // 引用明细追踪硬上限：超过此引用数的论文不追踪（受限于反爬 + 抓取页数 cap，
     // 高引用论文无法建立完整基线，强行追踪会污染 diff 并大幅增加封号风险）
     this.MAX_TRACKABLE_CITATIONS = 100;
-    
+
+    // warmup 批次级覆盖率判定：Scholar 偶发返回稀疏引用列表（cited by 页面条目远少于 citations 数），
+    // 单篇看 length>0 无法识别——这种异常通常是 Scholar 全局抽风，一次 refresh 内所有论文都受影响。
+    // 做批次级聚合：同作者本批次所有 warmup 抓取的 总抓取数/总引用数 < 阈值时整批作废下次重试，
+    // 避免用残缺基线下次 diff 把缺失的引用者全误报为新增
+    this.WARMUP_COVERAGE_THRESHOLD = 0.6;
+    this.WARMUP_MIN_SAMPLE = 3; // 样本太少时跳过判定（统计无意义）
+
     // 修复：移除实例变量，改用持久化存储
     this.notificationCooldown = 5 * 60 * 1000; // 5分钟冷却时间（常量）
     
@@ -1401,12 +1408,30 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
       return hasTable && !hasEndMarker;
   }
 
-  // 把旧论文的 seenCiterIds / warmedUp 按 title 迁移到新论文
+  // 从 paper.link 提取 Scholar 的稳定论文 ID（citation_for_view=USER:HASH 中的 USER:HASH 部分）
+  // 比 title 字符串稳定得多，用作 mergePaperMetadata 的主键
+  // title 偶尔会因 HTML 实体解码、空白字符、Scholar 改标题等原因产生微小差异，
+  // 导致 warmedUp 迁移失败 → 已预热的论文反复被 initializeBaseline / enrichCitationDetails 重抓
+  extractPaperId(link) {
+      if (!link) return null;
+      const m = link.match(/citation_for_view=([^&]+)/);
+      return m ? m[1] : null;
+  }
+
+  // 把旧论文的 seenCiterIds / warmedUp 迁移到新论文
+  // 主键优先级：citation_for_view ID（稳定）→ title 字符串（fallback）
   mergePaperMetadata(oldPapers, newPapers) {
-      const oldMap = new Map();
-      oldPapers.forEach(p => oldMap.set(p.title, p));
+      const oldByTitle = new Map();
+      const oldById = new Map();
+      oldPapers.forEach(p => {
+          oldByTitle.set(p.title, p);
+          const pid = this.extractPaperId(p.link);
+          if (pid) oldById.set(pid, p);
+      });
       newPapers.forEach(np => {
-          const op = oldMap.get(np.title);
+          const npId = this.extractPaperId(np.link);
+          let op = npId ? oldById.get(npId) : null;
+          if (!op) op = oldByTitle.get(np.title);
           if (!op) return;
           if (op.seenCiterIds) np.seenCiterIds = op.seenCiterIds;
           if (op.warmedUp) np.warmedUp = op.warmedUp;
@@ -1522,6 +1547,7 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
       (updatedInfo.papers || []).forEach(p => newPaperMap.set(p.title, p));
 
       const changes = updatedInfo.paperChanges || [];
+      const warmupSamples = []; // 暂存 warmup 抓取结果，循环末尾做批次覆盖率判定
       for (const change of changes) {
           if (!change.change || change.change <= 0) continue;
           // 超过 MAX_TRACKABLE_CITATIONS 的论文不追踪：受分页 cap 限制无法建立完整基线
@@ -1563,24 +1589,26 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
                   // 抓取失败（详情页解析失败/网络错/反爬）统一标 fetchFailed 让下次重试。
                   // 反爬时 updatedSeenIds 是空（fetchNewCitersForPaper 在首页就 break），
                   // 走这里不写 seenCiterIds / 不标 warmedUp，下次 refresh 重新走 warmup。
-                  // 旧实现把反爬排除在外（!result.antiCrawl），但下次 needsWarmup 仍为 true 会重试，
-                  // 所以 warmup 分支反爬不设 fetchFailed 不会触发静默跳过 bug —— 这里改成统一设是为了
-                  // 和 diff 分支语义一致，并防御未来 warmup 状态判断逻辑变化导致的回归。
                   if (!result.fetchedAnyPage) {
                       change.fetchFailed = true;
                       console.warn(`⚠️ 预热失败（未拿到数据${result.antiCrawl ? '/反爬' : ''}），下次重试: ${change.title.substring(0, 40)}`);
                   } else {
-                      change.fetchFailed = false;
+                      // 暂存到批次：延后到循环末尾做覆盖率判定，
+                      // 避免单篇接受后用残缺基线下次 diff 把缺失引用者全误报为新增。
+                      // 不立即设 newPaper.warmedUp / change.fetchFailed=false，判定后统一回填。
+                      // change.seenCiterIds / newPaper.seenCiterIds 先暂存——判定不达标时保留无妨，
+                      // 下次重试走 warmup 仍传 []，不受已有 seenCiterIds 影响
                       change.seenCiterIds = result.updatedSeenIds;
-                      // 仅当确实拿到数据才标记预热完成。
-                      // 首页被反爬/网络失败时 fetchNewCitersForPaper 会 break 返回空数组（不抛异常），
-                      // 此时若标记 warmedUp=true，下次 diff 会用空基线把所有当前引用者误判为新增。
-                      const baselineValid = result.updatedSeenIds.length > 0;
                       if (newPaper) {
                           newPaper.seenCiterIds = result.updatedSeenIds;
-                          if (baselineValid) newPaper.warmedUp = true;
                       }
-                      console.log(`✅ 预热${baselineValid ? '完成' : '未完成（未拿到数据，下次重试）'}: ${change.title.substring(0, 40)} 基线 ${result.updatedSeenIds.length} 篇`);
+                      warmupSamples.push({
+                          change,
+                          newPaper,
+                          fetchedCount: result.updatedSeenIds.length,
+                          expectedCount: change.newCitations
+                      });
+                      console.log(`✅ 预热抓取完成（待批次判定）: ${change.title.substring(0, 40)} 基线 ${result.updatedSeenIds.length} 篇`);
                   }
               } catch (err) {
                   console.warn(`⚠️ 预热失败 (${change.title.substring(0, 30)}):`, err.message);
@@ -1651,7 +1679,41 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
           await this.randomDelay(2500, 4500);
       }
 
+      // 批次末尾统一判定：Scholar 抽风时整批 cited by 都会稀疏，聚合判定才能发现
+      if (warmupSamples.length > 0) {
+          if (this.shouldApplyWarmupBatch(warmupSamples)) {
+              for (const s of warmupSamples) {
+                  s.change.fetchFailed = false;
+                  if (s.newPaper) s.newPaper.warmedUp = true;
+              }
+              console.log(`✅ ${author.name} warmup 批次接受 ${warmupSamples.length} 篇`);
+          } else {
+              // 回滚：保持 warmedUp=false，fetchFailed=true 触发下次重试
+              for (const s of warmupSamples) {
+                  s.change.fetchFailed = true;
+              }
+              console.warn(`🚨 ${author.name} warmup 批次覆盖率不达标，${warmupSamples.length} 篇结果回滚，下次 refresh 重试`);
+          }
+      }
+
       return updatedInfo;
+  }
+
+  // 批次级覆盖率判定：Scholar 偶发抽风时同作者所有论文的 cited by 列表都会变稀疏，
+  // 单篇无法识别，聚合后看覆盖率才能发现
+  // samples: [{ fetchedCount, expectedCount }]
+  shouldApplyWarmupBatch(samples) {
+      if (samples.length < this.WARMUP_MIN_SAMPLE) {
+          console.log(`📊 warmup 批次样本 ${samples.length} < ${this.WARMUP_MIN_SAMPLE}，跳过覆盖率判定`);
+          return true;
+      }
+      const totalFetched = samples.reduce((s, x) => s + x.fetchedCount, 0);
+      const totalExpected = samples.reduce((s, x) => s + x.expectedCount, 0);
+      if (totalExpected === 0) return true;
+      const coverage = totalFetched / totalExpected;
+      const apply = coverage >= this.WARMUP_COVERAGE_THRESHOLD;
+      console.log(`📊 warmup 批次覆盖率 ${(coverage * 100).toFixed(1)}% (${totalFetched}/${totalExpected}) → ${apply ? '接受' : '回滚重试'}`);
+      return apply;
   }
 
   // 基线初始化：两开关都开 + 存在未 warmedUp 的合格论文时，主动建立 seenCiterIds
@@ -1693,6 +1755,10 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
       let consecutiveFailures = 0;
       const MAX_CONSECUTIVE_FAILURES = 3;
 
+      // 暂存 warmup 抓取结果，循环末尾做批次覆盖率判定
+      // Scholar 偶发抽风时整批 cited by 列表都会稀疏，立即标 warmedUp 会用残缺基线下次误报
+      const warmupSamples = [];
+
       for (const paper of toInit) {
           try {
               const result = await this.fetchNewCitersForPaper(paper.link, domain, []);
@@ -1704,8 +1770,12 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
                   break;
               }
               if (result.updatedSeenIds.length > 0) {
-                  paper.seenCiterIds = result.updatedSeenIds;
-                  paper.warmedUp = true;
+                  warmupSamples.push({
+                      paper,
+                      updatedSeenIds: result.updatedSeenIds,
+                      fetchedCount: result.updatedSeenIds.length,
+                      expectedCount: paper.citations
+                  });
                   successCount++;
                   consecutiveFailures = 0;
               } else {
@@ -1725,8 +1795,16 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
           await this.randomDelay(2500, 4500);
       }
 
-      if (successCount > 0) {
-          console.log(`✅ ${updatedInfo.name} 本次初始化 ${successCount}/${toInit.length}`);
+      // 批次末尾统一判定：覆盖率达标才回填 warmedUp，不达标整批回滚下次重试
+      if (warmupSamples.length > 0 && this.shouldApplyWarmupBatch(warmupSamples)) {
+          for (const s of warmupSamples) {
+              s.paper.seenCiterIds = s.updatedSeenIds;
+              s.paper.warmedUp = true;
+          }
+          console.log(`✅ ${updatedInfo.name} 本次初始化接受 ${warmupSamples.length}/${toInit.length} 篇`);
+      } else if (warmupSamples.length > 0) {
+          // 覆盖率不达标：不写 seenCiterIds、不标 warmedUp，保持论文"未预热"干净状态
+          console.warn(`🚨 ${updatedInfo.name} warmup 批次覆盖率不达标，${warmupSamples.length} 篇结果回滚，下次 refresh 重试`);
       } else {
           console.warn(`❌ ${updatedInfo.name} 本次初始化全部失败，下次刷新重试`);
       }
@@ -1801,7 +1879,7 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
           // 也算"成功但无数据"（可能是引用数=0），不归入抓取失败
           fetchedAnyPage = true;
 
-          const citers = this.parseCitersFromHtml(html);
+          const citers = this.parseCitersFromHtml(html, domain);
           if (citers.length === 0) {
               console.log(`📄 第 ${page + 1} 页无论文，结束`);
               break;
@@ -1891,7 +1969,9 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
   }
 
   // 从 scholar?cites= 搜索结果页 HTML 中解析引用论文列表
-  parseCitersFromHtml(html) {
+  // domain 用于把相对 href（/scholar?cluster=...）拼成绝对 URL；
+  // 外链（jstage/arxiv/doi 等）是绝对 URL，直接用
+  parseCitersFromHtml(html, domain) {
       const citers = [];
       const titleRegex = /<h3[^>]*class="gs_rt"[^>]*>([\s\S]*?)<\/h3>/g;
       let m;
@@ -1899,13 +1979,34 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
           const titleHtml = m[1];
           const afterTitle = html.substring(m.index + m[0].length);
 
-          // 优先匹配带 cluster= 的链接（稳定 ID）
-          const linkMatch = titleHtml.match(/<a[^>]*href="\/scholar\?[^"]*cluster=([^&"]+)[^"]*"[^>]*>([\s\S]*?)<\/a>/);
+          // 收集 h3 里所有 a 标签，区分外链（出版社/DOI）与 scholar 内部链接
+          // 旧实现只匹配 /scholar?cluster= 一种，导致 jstage/arxiv 这类真实发表页
+          // 全被当成无外链处理，点 title 只能跳到 scholar cluster 页
+          const anchorMatches = [...titleHtml.matchAll(/<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)];
           let clusterId = null;
           let titleText = '';
-          if (linkMatch) {
-              clusterId = linkMatch[1];
-              titleText = this.stripTags(linkMatch[2]).trim();
+          let link = '';
+
+          if (anchorMatches.length > 0) {
+              // 优先外链：href 以 http 开头且非 scholar 域名 → 论文真实发表页
+              const external = anchorMatches.find(am =>
+                  am[1].startsWith('http') && !am[1].includes('scholar.google')
+              );
+              const chosen = external || anchorMatches[0];
+              const rawHref = chosen[1].replace(/&amp;/g, '&');
+              titleText = this.stripTags(chosen[2]).trim();
+
+              // cluster ID 仍解析出来用作稳定去重 ID（外链 URL 不稳定，不适合做 seen-set 键）
+              const clusterMatch = rawHref.match(/[?&]cluster=([^&"]+)/);
+              if (clusterMatch) clusterId = clusterMatch[1];
+
+              if (rawHref.startsWith('http')) {
+                  link = rawHref;
+              } else if (rawHref.startsWith('/')) {
+                  link = `https://${domain}${rawHref}`;
+              } else {
+                  link = '';
+              }
           } else {
               // 非链接结果（如 [CITATION] 条目）
               titleText = this.stripTags(titleHtml).replace(/^\[[^\]]*\]\s*/, '').trim();
@@ -1932,7 +2033,7 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
               authors,
               year,
               clusterId: effectiveId,
-              link: clusterId ? `https://scholar.google.com/scholar?cluster=${clusterId}&hl=en` : ''
+              link
           });
       }
       return citers;

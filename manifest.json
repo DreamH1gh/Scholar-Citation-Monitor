@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Scholar Citation Monitor",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Monitor Google Scholar author citation counts and track changes automatically without opening tabs",
   "host_permissions": [
     "https://scholar.google.com/*",
