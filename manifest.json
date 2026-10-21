@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Scholar Citation Monitor",
-  "version": "2.1.0",
-  "description": "Monitor Google Scholar author citation counts and track changes automatically without opening tabs",
+  "version": "2.2.3",
+  "description": "Track Google Scholar and Semantic Scholar citation counts, per-paper changes, and which new papers cite you",
   "host_permissions": [
+    "https://api.semanticscholar.org/*",
     "https://scholar.google.com/*",
     "https://scholar.google.cn/*",
     "https://scholar.google.com.hk/*",

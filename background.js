@@ -1,5 +1,5 @@
 // background.js - 修复版本，解决重复通知问题（持久化通知去重数据）
-importScripts('i18n.js');
+importScripts('i18n.js', 's2.js');
 class ScholarBackgroundService {
 constructor() {
     this.scholarDomains = [
@@ -14,9 +14,14 @@ constructor() {
         'scholar.google.ca',
         'scholar.google.cn'
     ];
-    this.REFRESH_INTERVAL_MINUTES = 30;
+    // 默认一天刷新两次（12 小时）。Google Scholar 是抓网页，频率越低触发反爬的概率越小。
+    this.REFRESH_INTERVAL_MINUTES = 720;
     this.ALARM_NAME = 'scholarAutoRefresh';
     this.KEEPALIVE_ALARM = 'keepAlive';
+
+    // 被 Scholar 反爬拦截后的自动刷新退避阶梯（分钟）：2h → 4h → 8h → 12h。
+    // 在被封的 session 上按原周期继续请求只会延长封锁，所以改成逐级拉长暂停时间。
+    this.ANTI_CRAWL_BACKOFF_MINUTES = [0, 120, 240, 480, 720];
 
     // 引用明细追踪硬上限：超过此引用数的论文不追踪（受限于反爬 + 抓取页数 cap，
     // 高引用论文无法建立完整基线，强行追踪会污染 diff 并大幅增加封号风险）
@@ -33,6 +38,8 @@ constructor() {
     this.notificationCooldown = 5 * 60 * 1000; // 5分钟冷却时间（常量）
     
     console.log('🚀 Scholar Background Service 启动');
+    this.s2Service = new S2BackgroundService();
+    this.s2Service.init();
     this.init();
 }
 
@@ -50,7 +57,10 @@ async init() {
 
 setupAlarms(forceReset = false) {
     chrome.alarms.get(this.ALARM_NAME, (existingAlarm) => {
-        const needCreate = forceReset || !existingAlarm;
+        // 周期与当前配置不一致时也要重建：否则改了默认间隔后，老用户仍被旧周期钉住
+        const periodMismatch = !!(existingAlarm &&
+            existingAlarm.periodInMinutes !== this.REFRESH_INTERVAL_MINUTES);
+        const needCreate = forceReset || !existingAlarm || periodMismatch;
         if (!needCreate) {
             console.log(`✅ 定时任务已存在，下次执行: ${new Date(existingAlarm.scheduledTime)}`);
             chrome.alarms.get(this.KEEPALIVE_ALARM, (ka) => {
@@ -65,14 +75,16 @@ setupAlarms(forceReset = false) {
         }
         chrome.alarms.clear(this.ALARM_NAME, () => {
             chrome.alarms.create(this.ALARM_NAME, {
-                delayInMinutes: 0.1,
+                // 首次安装：稍后立刻拉一次；仅因周期变化而重建：等满一个周期，
+                // 避免刚改完间隔就立刻请求 Scholar
+                delayInMinutes: (forceReset || !existingAlarm) ? 0.1 : this.REFRESH_INTERVAL_MINUTES,
                 periodInMinutes: this.REFRESH_INTERVAL_MINUTES
             });
             chrome.alarms.create(this.KEEPALIVE_ALARM, {
                 delayInMinutes: 1,
                 periodInMinutes: 10
             });
-            console.log(`⏰ 已创建定时任务 (forceReset=${forceReset})`);
+            console.log(`⏰ 已创建定时任务 (forceReset=${forceReset}, 周期=${this.REFRESH_INTERVAL_MINUTES}分钟)`);
         });
     });
 }
@@ -167,8 +179,8 @@ async handleMessage(request, sender) {
             
         case 'manualRefresh':
             console.log('🔄 手动刷新请求');
-            // 手动刷新时不发送通知，避免重复
-            const refreshResult = await this.executeAutoRefresh(false);
+            // 手动刷新时不发送通知，避免重复；isManual=true 表示不受反爬退避限制
+            const refreshResult = await this.executeAutoRefresh(false, true);
             return {
                 success: true,
                 message: '手动刷新完成',
@@ -183,6 +195,18 @@ async handleMessage(request, sender) {
         case 'clearLogs':
             await this.saveRefreshLogs([]);
             return {success: true, message: '日志已清除'};
+
+        case 's2SearchAuthors':
+            return {
+                success: true,
+                results: await this.s2Service.searchAuthors(request.query)
+            };
+
+        case 's2AddAuthor':
+            return {
+                success: true,
+                author: await this.s2Service.addAuthor(request.authorId)
+            };
             
         case 'testAlarm':
             return await this.testAlarmFunctionality();
@@ -213,9 +237,10 @@ async performStartupCheck() {
 
         console.log(`⏰ 距离上次更新: ${Math.round(timeSinceLastUpdate)}分钟`);
 
-        // 如果超过35分钟没有更新，提前 alarm 让监听器统一触发（避免与 alarm 双重 executeAutoRefresh）
-        if (timeSinceLastUpdate > 35) {
-            console.log('⚡ 距离上次更新时间过长，提前 alarm 立即触发');
+        // 补刷阈值与刷新周期保持一致：只有确实漏掉了一整个周期（例如浏览器长时间关闭）
+        // 才补，否则每次打开弹窗/唤醒 Service Worker 都会触发刷新，把「一天两次」的间隔架空
+        if (timeSinceLastUpdate > this.REFRESH_INTERVAL_MINUTES) {
+            console.log('⚡ 已超过一个刷新周期未更新，补一次');
             chrome.alarms.create(this.ALARM_NAME, {
                 delayInMinutes: 0.1,
                 periodInMinutes: this.REFRESH_INTERVAL_MINUTES
@@ -300,11 +325,20 @@ async saveNotificationInfo(hash, time) {
 }
 
 // 执行自动刷新 - 修复：添加通知控制参数
-async executeAutoRefresh(enableNotifications = true) {
+async executeAutoRefresh(enableNotifications = true, isManual = false) {
     // 并发守卫：防止 alarm 自动刷新与 popup 手动刷新重叠，避免重复请求 Scholar 导致封号
     if (this._refreshing) {
         console.log('⏳ 已有刷新任务在执行，跳过本次');
         return null;
+    }
+    // 反爬退避：定时任务在被拦后暂停数小时；手动刷新由用户显式触发，不受限制
+    if (!isManual) {
+        const backoffUntil = await this.getAntiCrawlBackoffUntil();
+        if (backoffUntil > Date.now()) {
+            const mins = Math.ceil((backoffUntil - Date.now()) / 60000);
+            console.log(`⏸️ [反爬退避中] 自动刷新暂停，约 ${mins} 分钟后再试`);
+            return null;
+        }
     }
     this._refreshing = true;
 
@@ -313,6 +347,14 @@ async executeAutoRefresh(enableNotifications = true) {
 
     try {
         const changes = await this.autoRefreshAll();
+
+        // Semantic Scholar 模块走官方 API，与 Scholar 抓取互不影响；
+        // 通知由 s2Service 自行发送（独立去重），此处只负责触发
+        try {
+            await this.s2Service.refreshAllAuthors(enableNotifications);
+        } catch (s2Error) {
+            console.error('❌ Semantic Scholar 刷新失败:', s2Error.message);
+        }
 
         const endTime = new Date();
         const duration = endTime - startTime;
@@ -532,6 +574,9 @@ async autoRefreshAll() {
                 successCount++;
                 console.log(`✅ ${author.name} 刷新成功`);
 
+                // 抓到数据说明抓取已恢复（用户可能刚通过验证），清掉反爬退避
+                await this.resetAntiCrawlBackoff();
+
                 // 每位作者处理完立即落盘，避免 SW 中断丢失 history
                 await this.saveAuthors(authors);
 
@@ -542,6 +587,11 @@ async autoRefreshAll() {
                     name: author.name,
                     error: error.message
                 });
+
+                // 命中反爬/限流 → 进入退避，避免下一轮定时任务继续硬撞
+                if (this.isAntiCrawlError(error)) {
+                    await this.escalateAntiCrawlBackoff(error.message);
+                }
 
                 // 重读 storage 后合并：避免旧 authors[i] 引用覆盖 popup 期间改过的字段
                 const latestErrSnap = await this.getStoredAuthors();
@@ -888,8 +938,9 @@ async getStoredAuthors() {
 
 // === 反爬告警 ===
 // 触发反爬时把被拦的引用列表页 URL 存下来，popup 打开时读出来给用户「去验证」按钮
-// Scholar 反爬是 session 级别，用户在浏览器里手动通过一次机器人验证后，
-// 扩展后续 fetch 会带上同 cookie 的验证态，下次 refresh 就能正常抓取
+// Scholar 反爬是 session 级别：所有抓取请求都带有 credentials:'include'，
+// 所以用户在浏览器里通过一次机器人验证后，验证 cookie 会被扩展的 fetch 复用，
+// 下次 refresh 就能正常抓取（此前请求未带 cookie，验证态无法复用，导致反复被拦）
 //
 // 单条覆盖式存储（不区分 authorId）：多作者同时反爬时只保留最后一个 alert。
 // 因为 Scholar 验证是 session 级，用户验证任一作者的 link 都会解除全部封锁，
@@ -898,6 +949,8 @@ async setAntiCrawlAlert(author, paperTitle, citingUrl) {
     if (!citingUrl) return;
     // 标记本作者本周期已反爬：autoRefreshAll 据此跳过 initializeBaseline
     this._authorAntiCrawlHit = true;
+    // 被拦后进入退避，避免定时任务继续硬撞
+    await this.escalateAntiCrawlBackoff('antiCrawlAlert');
     return new Promise((resolve) => {
         chrome.storage.local.set({
             antiCrawlAlert: {
@@ -915,6 +968,64 @@ async clearAntiCrawlAlert() {
     return new Promise((resolve) => {
         chrome.storage.local.remove('antiCrawlAlert', resolve);
     });
+}
+
+// === 反爬退避 ===
+// 被拦后逐级拉长暂停时间（2h → 4h → 8h → 12h），一旦成功抓到数据立即清零。
+// 手动点「刷新」不受退避限制（用户显式操作），成功同样会清零。
+isAntiCrawlError(error) {
+    const msg = String((error && error.message) || error || '');
+    return /验证码|访问被拒绝|请求过于频繁|unusual traffic|captcha|robot check|反爬|HTTP 403|HTTP 429/i.test(msg);
+}
+
+async getAntiCrawlBackoffUntil() {
+    try {
+        const state = await new Promise((resolve) => {
+            chrome.storage.local.get(['gsBackoffUntil'], resolve);
+        });
+        return Number(state.gsBackoffUntil) || 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+async escalateAntiCrawlBackoff(reason = '') {
+    try {
+        const state = await new Promise((resolve) => {
+            chrome.storage.local.get(['gsBackoffLevel'], resolve);
+        });
+        const ladder = this.ANTI_CRAWL_BACKOFF_MINUTES;
+        const level = Math.min((Number(state.gsBackoffLevel) || 0) + 1, ladder.length - 1);
+        const minutes = ladder[level] || ladder[ladder.length - 1];
+        const until = Date.now() + minutes * 60 * 1000;
+        await new Promise((resolve) => {
+            chrome.storage.local.set({
+                gsBackoffLevel: level,
+                gsBackoffUntil: until,
+                gsBackoffReason: reason
+            }, resolve);
+        });
+        console.warn(`⏸️ [反爬] 第 ${level} 级退避：自动刷新暂停 ${minutes} 分钟（至 ${new Date(until).toLocaleString()}）`);
+        return until;
+    } catch (e) {
+        console.error('设置反爬退避失败:', e);
+        return 0;
+    }
+}
+
+async resetAntiCrawlBackoff() {
+    try {
+        const state = await new Promise((resolve) => {
+            chrome.storage.local.get(['gsBackoffLevel', 'gsBackoffUntil'], resolve);
+        });
+        if (!state.gsBackoffLevel && !state.gsBackoffUntil) return;
+        await new Promise((resolve) => {
+            chrome.storage.local.remove(['gsBackoffLevel', 'gsBackoffUntil', 'gsBackoffReason'], resolve);
+        });
+        console.log('✅ [反爬] 抓取已恢复，退避已清零');
+    } catch (e) {
+        console.error('清除反爬退避失败:', e);
+    }
 }
 
 // 获取完整作者信息（包括所有论文）
@@ -972,7 +1083,11 @@ async fetchCompleteAuthorInfoWithRetry(url, preferredDomain = null, maxRetries =
     }
 
     console.error('所有域名都无法访问，详细错误:', errors);
-    throw new Error(`所有域名都无法访问。尝试了 ${this.scholarDomains.length} 个域名，每个重试 ${maxRetries} 次。`);
+    // 把底层原因带进错误消息：上层据此识别「反爬/限流」并进入退避
+    const detail = (Array.isArray(errors) ? errors : [])
+        .map(e => (e && e.message) || String(e))
+        .join(' | ');
+    throw new Error(`所有域名都无法访问。尝试了 ${this.scholarDomains.length} 个域名，每个重试 ${maxRetries} 次。详细: ${detail}`);
 }
 
 // 获取完整作者信息（基本信息 + 所有论文）
@@ -1001,6 +1116,7 @@ async fetchCompleteAuthorInfo(baseUrl, userId, domain) {
           console.log(`正在请求: ${url}`);
           const response = await fetch(url, {
               method: 'GET',
+              credentials: 'include',
               headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -1217,6 +1333,7 @@ async fetchCompleteAuthorInfo(baseUrl, userId, domain) {
               
               const response = await fetch(pageUrl, {
                   method: 'GET',
+                  credentials: 'include',
                   headers: {
                       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -1721,7 +1838,7 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
   // 不变化的论文永远拿不到基线，导致新增引用者永远显示不出来
   //
   // 反爬策略（B 分摊）：每次 refresh 最多初始化 MAX_INITIALIZE_PER_REFRESH 篇，
-  // 利用 30 分钟 alarm 周期自然分摊。140 篇作者约 5 小时自动完成，用户无感
+  // 利用 alarm 周期自然分摊，避免一次刷新里集中抓太多。周期越长，预热分摊得越慢
   //
   // 状态判断：用 paper.warmedUp 作为每篇论文的断点，所有合格论文都 warmedUp 后 eligible=0 自动跳过
   async initializeBaseline(author, updatedInfo, domain) {
@@ -1763,7 +1880,7 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
           try {
               const result = await this.fetchNewCitersForPaper(paper.link, domain, []);
               // 反爬触发：存 alert 提示用户去验证，并立即结束本次初始化
-              // Scholar 反爬是 session 级别，等下次 refresh（30 分钟后）大概率仍被拦
+              // Scholar 反爬是 session 级别，等下次 refresh（下一个周期）大概率仍被拦
               if (result.antiCrawl) {
                   await this.setAntiCrawlAlert(author, paper.title, result.citingUrl);
                   console.warn(`🚨 反爬触发，立即结束本次初始化（已成功 ${successCount}/${toInit.length}），下次 refresh 继续`);
@@ -1943,6 +2060,7 @@ extractPapersFromHtmlWithRegex(html, domain, startIndex = 0) {
       try {
           const response = await fetch(url, {
               method: 'GET',
+              credentials: 'include',
               headers: {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
