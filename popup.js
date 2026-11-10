@@ -968,7 +968,24 @@ renderSparkline(history, range = 30) {
     if (!history || history.length === 0) {
         return `<div class="history-empty">${t('history_empty')}</div>`;
     }
-    const points = range === 'all' ? history.slice() : history.slice(-range);
+    
+    // const points = range === 'all' ? history.slice() : history.slice(-range);
+    
+    let points = history.slice();
+
+    if (range !== 'all') {
+        const cutoff = new Date();
+        cutoff.setHours(0, 0, 0, 0);
+        cutoff.setDate(cutoff.getDate() - (Number(range) - 1));
+
+        points = points.filter(p => new Date(p.timestamp) >= cutoff);
+    }
+
+    // 所选时间范围内可能没有记录
+    if (points.length === 0) {
+        return `<div class="history-empty">${t('history_empty')}</div>`;
+    }
+    
     if (points.length === 1) {
         return `<div class="history-single">📊 ${points[0].citations}</div>`;
     }
